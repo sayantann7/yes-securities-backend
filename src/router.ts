@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getSignedDownloadUrl, listChildren } from "./aws";
+import { getSignedDownloadUrl, getSignedUploadUrl, listChildren } from "./aws";
 
 const router = Router();
 
@@ -18,11 +18,25 @@ router.get(
 );
 
 router.get(
-  "/files",
+  "/files/fetch",
   async (req: Request, res: Response) => {
     try {
       const key = decodeURIComponent(req.body.key);
       const url = await getSignedDownloadUrl(key);
+      res.json({ url });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to generate signed URL" });
+    }
+  }
+);
+
+router.get(
+  "/files/upload",
+  async (req: Request, res: Response) => {
+    try {
+      const key = decodeURIComponent(req.body.key);
+      const url = await getSignedUploadUrl(key);
       res.json({ url });
     } catch (err) {
       console.error(err);
