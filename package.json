@@ -3,15 +3,18 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsc -b && node dist/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.817.0",
+    "@aws-sdk/s3-request-presigner": "^3.817.0",
     "@types/express": "^5.0.2",
     "aws-sdk": "^2.1692.0",
+    "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "typescript": "^5.8.3",
     "yes-securities-backend": "file:"
