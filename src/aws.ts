@@ -4,7 +4,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 require('dotenv').config();
 
 const s3Client = new S3Client({ region: 'ap-south-1' });
-const bucket = 'my-bucket-1502';
+const bucket = process.env.S3_BUCKET_NAME;
 
 export interface GetSignedUrlParams {
     path: string;
