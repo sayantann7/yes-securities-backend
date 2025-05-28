@@ -16,4 +16,15 @@ model User {
   role      String   @default("user")
   updatedAt DateTime @default(now())
   createdAt DateTime @default(now())
+  comments Comment[]
+}
+
+model Comment {
+  id          String   @id @default(cuid())
+  content     String
+  userId      String
+  documentId  String
+  updatedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  user        User @relation(fields: [userId], references: [id])
 }
