@@ -56,26 +56,22 @@ router.post("/signin", async (req: Request, res: Response) => {
 // @ts-ignore
 router.post("/comment", async (req: Request, res: Response) => {
   try{
-    const { token, comment } = req.body;
+    const { email, documentId, comment } = req.body;
 
-    if (!token || !comment) {
-      return res.status(400).json({ error: "Token and comment are required" });
-    }
-
-    // @ts-ignore
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    if (!decoded || typeof decoded === 'string') {
-      return res.status(401).json({ error: "Invalid token" });
+    if (!email || !documentId || !comment) {
+      return res.status(400).json({ error: "Email, Document ID and comment are required" });
     }
     
-    // @ts-ignore
-    const userId = decoded.userId;
+    const user = await prisma.user.findUnique({
+      where: { email: String(email) },
+    });
 
     // Save comment to database
     const newComment = await prisma.comment.create({
+      //@ts-ignore
       data: {
-        userId: userId,
+        userId: user?.id,
+        documentId: String(documentId),
         content: comment,
       },
     });
@@ -84,9 +80,100 @@ router.post("/comment", async (req: Request, res: Response) => {
       message: "Comment added successfully", 
       comment: newComment 
     });
+
   }catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to sign in" });
+    res.status(500).json({ error: "Failed to add comment" });
+  }
+});
+
+// @ts-ignore
+router.put("/comment", async (req: Request, res: Response) => {
+  try{
+    const { documentId, comment } = req.body;
+
+    if (!documentId || !comment) {
+      return res.status(400).json({ error: "Document ID and comment are required" });
+    }
+    
+    const orgComment = await prisma.comment.findFirst({
+      where: { documentId: String(documentId), content: String(comment) },
+    });
+
+    if (!orgComment) {
+      return res.status(404).json({ error: "Comment not found" });
+    }
+
+    // Update comment in database
+    const updatedComment = await prisma.comment.update({
+      where: { id: orgComment.id },
+      data: { content: comment },
+    });
+
+    res.json({ 
+      message: "Comment updated successfully", 
+      comment: updatedComment
+    });
+
+  }catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update comment" });
+  }
+});
+
+// @ts-ignore
+router.delete("/comment", async (req: Request, res: Response) => {
+  try{
+    const { documentId, comment } = req.body;
+
+    if (!documentId || !comment) {
+      return res.status(400).json({ error: "Document ID and comment are required" });
+    }
+    
+    const orgComment = await prisma.comment.findFirst({
+      where: { documentId: String(documentId), content: String(comment) },
+    });
+
+    if (!orgComment) {
+      return res.status(404).json({ error: "Comment not found" });
+    }
+
+    // Delete comment from database
+    await prisma.comment.delete({
+      where: { id: orgComment.id },
+    });
+
+    res.json({ 
+      message: "Comment deleted successfully"
+    });
+
+  }catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete comment" });
+  }
+});
+
+// @ts-ignore
+router.get("/comments", async (req: Request, res: Response) => {
+  try{
+    const { documentId } = req.body;
+
+    if (!documentId ) {
+      return res.status(400).json({ error: "Document ID is required" });
+    }
+
+    const comments = await prisma.comment.findMany({
+      where: { documentId: String(documentId) }
+    });
+
+    res.json({ 
+      message: "Comment fetched successfully", 
+      comments: comments
+    });
+
+  }catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch comment" });
   }
 });
 
