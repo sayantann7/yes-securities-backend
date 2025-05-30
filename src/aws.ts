@@ -17,7 +17,12 @@ export async function listChildren(prefix: string) {
         Prefix: prefix,
         Delimiter: "/",
     });
+    
+    console.log("Command to be sent:", data);
+    
     const response = await s3Client.send(data);
+
+    console.log("Response from S3:", response);
 
     const folders: string[] = [];
     response.CommonPrefixes?.forEach((prefix) => {

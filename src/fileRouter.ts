@@ -7,8 +7,12 @@ router.get(
   "/folders",
   async (req: Request, res: Response) => {
     try {
-      const prefix = req.body.prefix as string || "";
-      const data = await listChildren(`${prefix}/`);
+      const prefix = req.body.prefix;
+      let decodedPrefix = `${prefix}/`;
+      if(prefix=="" || prefix.endsWith("/")){
+        decodedPrefix = prefix;
+      }
+      const data = await listChildren(decodedPrefix);
       res.json(data);
     } catch (err) {
       console.error(err);
