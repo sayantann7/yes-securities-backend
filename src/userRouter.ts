@@ -54,6 +54,44 @@ router.post("/signin", async (req: Request, res: Response) => {
 });
 
 // @ts-ignore
+router.put("/user", async (req: Request, res: Response) => {
+  try {
+    const { email, fullname } = req.body;
+
+    if (!email || !fullname) {
+      return res.status(400).json({ error: "Email and Fullname are required" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(email) },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Update user in database
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        fullname: String(fullname),
+        email: String(email),
+        updatedAt: new Date(),
+      },
+    });
+
+    res.json({ 
+      message: "User updated successfully", 
+      user: updatedUser 
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update user" });
+  }
+});
+
+// @ts-ignore
 router.post("/comment", async (req: Request, res: Response) => {
   try{
     const { email, documentId, comment } = req.body;
