@@ -1,9 +1,9 @@
 import { Router, Request, Response } from "express";
-import { getSignedDownloadUrl, getSignedUploadUrl, listChildren } from "./aws";
+import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder } from "./aws"
 
 const router = Router();
 
-router.get(
+router.post(
   "/folders",
   async (req: Request, res: Response) => {
     try {
@@ -13,6 +13,7 @@ router.get(
         decodedPrefix = prefix;
       }
       const data = await listChildren(decodedPrefix);
+      console.log(data);
       res.json(data);
     } catch (err) {
       console.error(err);
@@ -21,7 +22,7 @@ router.get(
   }
 );
 
-router.get(
+router.post(
   "/files/fetch",
   async (req: Request, res: Response) => {
     try {
@@ -35,7 +36,7 @@ router.get(
   }
 );
 
-router.get(
+router.post(
   "/files/upload",
   async (req: Request, res: Response) => {
     try {
@@ -48,5 +49,28 @@ router.get(
     }
   }
 );
+
+
+//@ts-ignore
+router.post('/folders/create', async (req: Request, res: Response) => {
+  const { prefix = '', name } = req.body;
+
+  const response = await createFolder(prefix, name);
+
+  if (response=== void 0) {
+    return res.status(400).json({ error: 'Folder name is required' });
+  }
+
+  const normalizedPrefix = prefix ? prefix.replace(/\/?$/, '/') : '';
+  const folderKey = `${normalizedPrefix}${name.replace(/\/?$/, '')}/`;
+
+  try {
+    const response = await createFolder(prefix, name);
+    return res.status(201).json({ message: 'Folder created', key: folderKey });
+  } catch (err) {
+    console.error('Error creating folder:', err);
+    return res.status(500).json({ error: 'Failed to create folder' });
+  }
+});
 
 export default router;

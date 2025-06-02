@@ -17,12 +17,8 @@ export async function listChildren(prefix: string) {
         Prefix: prefix,
         Delimiter: "/",
     });
-    
-    console.log("Command to be sent:", data);
-    
-    const response = await s3Client.send(data);
 
-    console.log("Response from S3:", response);
+    const response = await s3Client.send(data);
 
     const folders: string[] = [];
     response.CommonPrefixes?.forEach((prefix) => {
@@ -43,6 +39,30 @@ export async function getSignedDownloadUrl(path: string): Promise<string> {
 }
 
 export async function getSignedUploadUrl(path: string): Promise<string> {
-	let command = new PutObjectCommand({ Bucket: bucket, Key:path });
-	return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    let command = new PutObjectCommand({ Bucket: bucket, Key: path });
+    return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+}
+
+export async function createFolder(prefix: string, name: string): Promise<void> {
+
+    if (typeof name !== 'string' || name.trim() === '') {
+        return void Promise.reject(new Error('Folder name is required'));
+    }
+
+    // ensure prefix ends with slash if non‐empty
+    const normalizedPrefix = prefix ? prefix.replace(/\/?$/, '/') : '';
+    const folderKey = `${normalizedPrefix}${name.replace(/\/?$/, '')}/`;
+
+    try {
+        await s3Client.send(new PutObjectCommand({
+            Bucket: bucket,
+            Key: folderKey,
+            Body: '',         // zero‐byte object to represent folder
+            ContentType: 'application/x-directory'
+        }));
+        return Promise.resolve();
+    } catch (err) {
+        console.error('Error creating folder:', err);
+        return void Promise.reject(new Error('Failed to create folder'));
+    }
 }
