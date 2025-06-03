@@ -192,26 +192,26 @@ router.delete("/comment", async (req: Request, res: Response) => {
 });
 
 // @ts-ignore
-router.get("/comments", async (req: Request, res: Response) => {
-  try{
-    const { documentId } = req.body;
-
-    if (!documentId ) {
+// …existing imports…
+router.get("/comments", async (req, res) => {
+  try {
+    const { documentId } = req.query;-
+    if (!documentId) {
       return res.status(400).json({ error: "Document ID is required" });
     }
 
     const comments = await prisma.comment.findMany({
-      where: { documentId: String(documentId) }
+      where: { documentId: String(documentId) },
+      include: { user: true }
     });
 
-    res.json({ 
-      message: "Comment fetched successfully", 
-      comments: comments
+    res.json({
+      message: "Comments fetched successfully",
+      comments,
     });
-
-  }catch (err) {
+  } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to fetch comment" });
+    res.status(500).json({ error: "Failed to fetch comments" });
   }
 });
 
