@@ -13,7 +13,6 @@ router.post(
         decodedPrefix = prefix;
       }
       const data = await listChildren(decodedPrefix);
-      console.log(data);
       res.json(data);
     } catch (err) {
       console.error(err);

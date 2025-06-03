@@ -195,7 +195,7 @@ router.delete("/comment", async (req: Request, res: Response) => {
 // …existing imports…
 router.get("/comments", async (req, res) => {
   try {
-    const { documentId } = req.query;-
+    const { documentId } = req.query;
     if (!documentId) {
       return res.status(400).json({ error: "Document ID is required" });
     }
