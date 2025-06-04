@@ -9,14 +9,15 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  fullname  String
-  password  String
-  role      String   @default("user")
-  updatedAt DateTime @default(now())
-  createdAt DateTime @default(now())
-  comments Comment[]
+  id         String   @id @default(cuid())
+  email      String   @unique
+  fullname   String
+  password   String
+  role       String   @default("user")
+  recentDocs String[]
+  updatedAt  DateTime @default(now())
+  createdAt  DateTime @default(now())
+  comments   Comment[]
 }
 
 model Comment {

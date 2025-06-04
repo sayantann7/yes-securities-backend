@@ -215,4 +215,78 @@ router.get("/comments", async (req, res) => {
   }
 });
 
+// @ts-ignore
+router.get("/recent-documents", async (req, res) => {
+  try {
+    const { userEmail: recentUserEmail } = req.query;
+
+    if (!recentUserEmail) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: { email: typeof recentUserEmail === "string" ? recentUserEmail : Array.isArray(recentUserEmail) ? recentUserEmail[0] : "" }
+    });
+
+    const recentDocuments = user?.recentDocs;
+
+    res.json({
+      message: "Recent documents fetched successfully",
+      recentDocuments : recentDocuments?.reverse() || [],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch recent documents" });
+  }
+});
+
+// @ts-ignore
+router.post("/recent-documents", async (req, res) => {
+  try {
+    const { userEmail, document } = req.body;
+
+    if (!userEmail || !document) {
+      return res.status(400).json({ error: "User email and Document ID are required" });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: { email: userEmail }
+    });
+
+    const recentDocuments = user?.recentDocs;
+
+    let docFound = false;
+
+    recentDocuments?.forEach((doc: any) => {
+      if (doc.id === document) {
+        docFound = true;
+      }
+    });
+
+    if (!docFound) {
+      recentDocuments?.push(document);
+    }
+
+    if ((recentDocuments && recentDocuments.length > 10)) {
+      recentDocuments.splice(0, recentDocuments.length - 10);
+    }
+
+    // Update user's recent documents in database
+    await prisma.user.update({
+      where: { id: user?.id },
+      data: {
+        recentDocs: recentDocuments,
+      },
+    });
+
+    res.json({
+      message: "Recent documents updated successfully",
+      recentDocuments : user?.recentDocs.reverse() || [],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update recent documents" });
+  }
+});
+
 export default router;
