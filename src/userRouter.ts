@@ -36,15 +36,25 @@ router.post("/signin", async (req: Request, res: Response) => {
       { expiresIn: '24h' }
     );
 
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lastSignIn: new Date(),
+        numberOfSignIns: user.numberOfSignIns + 1,
+      },
+    });
+
     res.json({ 
       message: "Sign in successful", 
       token,
       user: {
-        id: user.id,
-        email: user.email,
-        fullname: user.fullname,
-        role: user.role,
-        createdAt: user.createdAt,
+        id: updatedUser.id,
+        email: updatedUser.email,
+        fullname: updatedUser.fullname,
+        role: updatedUser.role,
+        createdAt: updatedUser.createdAt,
+        lastSignIn: updatedUser.lastSignIn,
+        numberOfSignIns: updatedUser.numberOfSignIns,
       }
     });
   } catch (err) {
@@ -88,6 +98,180 @@ router.put("/user", async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update user" });
+  }
+});
+
+// @ts-ignore
+router.post("/documentViewed", async (req: Request, res: Response) => {
+  try {
+    const { userEmail, documentId } = req.body;
+
+    if (!userEmail || !documentId) {
+      return res.status(400).json({ error: "User email and Document ID are required" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(userEmail) },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Update user's viewed documents in database
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        documentsViewed : user.documentsViewed + 1,
+      },
+    });
+
+    res.json({ 
+      message: "Document viewed successfully", 
+      user: updatedUser 
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update viewed document" });
+  }
+});
+
+// @ts-ignore
+router.post("/updateTime", async (req: Request, res: Response) => {
+  try {
+    const { userEmail, timeSpent } = req.body;
+
+    if (!userEmail || !timeSpent) {
+      return res.status(400).json({ error: "User email and time spent are required" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(userEmail) },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Update user's time spent in database
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        timeSpent : user.timeSpent + Number(timeSpent),
+      },
+    });
+
+    res.json({ 
+      message: "Time updated successfully", 
+      user: updatedUser 
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update time" });
+  }
+});
+
+// @ts-ignore
+router.get("/getTotalSignIns", async (req: Request, res: Response) => {
+  try {
+
+    const signIns = await prisma.user.aggregate({
+      _sum: {
+        numberOfSignIns: true,
+      },
+    });
+
+    res.json({ 
+      message: "Total sign-ins fetched successfully", 
+      totalSignIns: signIns._sum.numberOfSignIns
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch total sign-ins" });
+  }
+});
+
+// @ts-ignore
+router.get("/getTotalDocumentsViewed", async (req: Request, res: Response) => {
+  try {
+
+    const documentsViewed = await prisma.user.aggregate({
+      _sum: {
+        documentsViewed: true,
+      },
+    });
+
+    res.json({ 
+      message: "Total documents viewed fetched successfully", 
+      totalDocumentsViewed: documentsViewed._sum.documentsViewed
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch total documents viewed" });
+  }
+});
+
+// @ts-ignore
+router.get("/getTotalTimeSpent", async (req: Request, res: Response) => {
+  try {
+
+    const timeSpent = await prisma.user.aggregate({
+      _sum: {
+        timeSpent: true,
+      },
+    });
+
+    res.json({ 
+      message: "Total time spent fetched successfully", 
+      totalTimeSpent: timeSpent._sum.timeSpent
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch total time spent" });
+  }
+});
+
+// @ts-ignore
+router.get("/userDetails", async (req: Request, res: Response) => {
+  try {
+    const { userEmail } = req.query;
+
+    if (!userEmail) {
+      return res.status(400).json({ error: "User email is required" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(userEmail) },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ 
+      message: "User details fetched successfully", 
+      user: {
+        id: user.id,
+        email: user.email,
+        fullname: user.fullname,
+        role: user.role,
+        createdAt: user.createdAt,
+        lastSignIn: user.lastSignIn,
+        numberOfSignIns: user.numberOfSignIns,
+        documentsViewed: user.documentsViewed,
+        timeSpent: user.timeSpent,
+        recentDocs: user.recentDocs || [],
+      }
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch user details" });
   }
 });
 

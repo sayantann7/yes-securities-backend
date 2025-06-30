@@ -9,23 +9,27 @@ datasource db {
 }
 
 model User {
-  id         String   @id @default(cuid())
-  email      String   @unique
-  fullname   String
-  password   String
-  role       String   @default("user")
-  recentDocs String[]
-  updatedAt  DateTime @default(now())
-  createdAt  DateTime @default(now())
-  comments   Comment[]
+  id              String    @id @default(cuid())
+  email           String    @unique
+  fullname        String
+  password        String
+  role            String    @default("user")
+  recentDocs      String[]
+  updatedAt       DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  comments        Comment[]
+  numberOfSignIns Int       @default(0)
+  lastSignIn      DateTime? @default(now())
+  timeSpent       Int       @default(0)
+  documentsViewed Int       @default(0)
 }
 
 model Comment {
-  id          String   @id @default(cuid())
-  content     String
-  userId      String
-  documentId  String
-  updatedAt   DateTime @default(now())
-  createdAt   DateTime @default(now())
-  user        User @relation(fields: [userId], references: [id])
+  id         String   @id @default(cuid())
+  content    String
+  userId     String
+  documentId String
+  updatedAt  DateTime @default(now())
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
 }
