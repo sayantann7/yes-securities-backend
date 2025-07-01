@@ -174,65 +174,83 @@ router.post("/updateTime", async (req: Request, res: Response) => {
 });
 
 // @ts-ignore
-router.get("/getTotalSignIns", async (req: Request, res: Response) => {
+router.get("/getBiweeklyMetrics", async (req: Request, res: Response) => {
   try {
-
-    const signIns = await prisma.user.aggregate({
-      _sum: {
-        numberOfSignIns: true,
-      },
-    });
-
-    res.json({ 
-      message: "Total sign-ins fetched successfully", 
-      totalSignIns: signIns._sum.numberOfSignIns
-    });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch total sign-ins" });
-  }
-});
-
-// @ts-ignore
-router.get("/getTotalDocumentsViewed", async (req: Request, res: Response) => {
-  try {
-
-    const documentsViewed = await prisma.user.aggregate({
-      _sum: {
-        documentsViewed: true,
-      },
-    });
-
-    res.json({ 
-      message: "Total documents viewed fetched successfully", 
-      totalDocumentsViewed: documentsViewed._sum.documentsViewed
-    });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch total documents viewed" });
-  }
-});
-
-// @ts-ignore
-router.get("/getTotalTimeSpent", async (req: Request, res: Response) => {
-  try {
-
-    const timeSpent = await prisma.user.aggregate({
+    // Get current date
+    const today = new Date();
+    
+    // Calculate start and end of current week (Sunday to Saturday)
+    const currentWeekStart = new Date(today);
+    currentWeekStart.setDate(today.getDate() - today.getDay()); // Go back to the last Sunday
+    currentWeekStart.setHours(0, 0, 0, 0); // Start of day
+    
+    const currentWeekEnd = new Date(today);
+    currentWeekEnd.setHours(23, 59, 59, 999); // End of current day
+    
+    // Calculate start and end of previous week
+    const previousWeekStart = new Date(currentWeekStart);
+    previousWeekStart.setDate(currentWeekStart.getDate() - 7); // Previous Sunday
+    
+    const previousWeekEnd = new Date(previousWeekStart);
+    previousWeekEnd.setDate(previousWeekStart.getDate() + 6); // Previous Saturday
+    previousWeekEnd.setHours(23, 59, 59, 999); // End of day
+    
+    // Get metrics for current week
+    const currentWeekMetrics = await prisma.user.aggregate({
       _sum: {
         timeSpent: true,
+        documentsViewed: true,
+        numberOfSignIns: true
       },
+      where: {
+        role: {
+          not: "admin"
+        },
+        lastSignIn: {
+          gte: currentWeekStart,
+          lte: currentWeekEnd
+        }
+      }
     });
-
-    res.json({ 
-      message: "Total time spent fetched successfully", 
-      totalTimeSpent: timeSpent._sum.timeSpent
+    
+    // Get metrics for previous week
+    const previousWeekMetrics = await prisma.user.aggregate({
+      _sum: {
+        timeSpent: true,
+        documentsViewed: true,
+        numberOfSignIns: true
+      },
+      where: {
+        role: {
+          not: "admin"
+        },
+        lastSignIn: {
+          gte: previousWeekStart,
+          lte: previousWeekEnd
+        }
+      }
     });
-
+    
+    res.json({
+      message: "Biweekly metrics fetched successfully",
+      currentWeek: {
+        timeSpent: currentWeekMetrics._sum.timeSpent || 0,
+        documentsViewed: currentWeekMetrics._sum.documentsViewed || 0,
+        signIns: currentWeekMetrics._sum.numberOfSignIns || 0,
+        startDate: currentWeekStart,
+        endDate: currentWeekEnd
+      },
+      previousWeek: {
+        timeSpent: previousWeekMetrics._sum.timeSpent || 0,
+        documentsViewed: previousWeekMetrics._sum.documentsViewed || 0,
+        signIns: previousWeekMetrics._sum.numberOfSignIns || 0,
+        startDate: previousWeekStart,
+        endDate: previousWeekEnd
+      }
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to fetch total time spent" });
+    res.status(500).json({ error: "Failed to fetch biweekly metrics" });
   }
 });
 
