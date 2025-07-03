@@ -20,15 +20,26 @@ export async function listChildren(prefix: string) {
 
     const response = await s3Client.send(data);
 
-    const folders: string[] = [];
-    response.CommonPrefixes?.forEach((prefix) => {
-        folders.push(prefix.Prefix || "");
-    });
+    const folders: Array<{ path: string; iconUrl?: string }> = [];
+    if (response.CommonPrefixes) {
+        for (const prefixItem of response.CommonPrefixes) {
+            const folderPath = prefixItem.Prefix || "";
+            const iconUrl = await getCustomIconUrl(folderPath);
+            folders.push({ path: folderPath, iconUrl: iconUrl || undefined });
+        }
+    }
 
-    const files: string[] = [];
-    response.Contents?.forEach((content) => {
-        files.push(content.Key || "");
-    });
+    const files: Array<{ path: string; iconUrl?: string }> = [];
+    if (response.Contents) {
+        for (const content of response.Contents) {
+            const filePath = content.Key || "";
+            // Skip the folder placeholder files and icon files
+            if (!filePath.endsWith('/') && !filePath.startsWith('icons/')) {
+                const iconUrl = await getCustomIconUrl(filePath);
+                files.push({ path: filePath, iconUrl: iconUrl || undefined });
+            }
+        }
+    }
 
     return { folders, files };
 }
@@ -64,6 +75,50 @@ export async function createFolder(prefix: string, name: string): Promise<void> 
     } catch (err) {
         console.error('Error creating folder:', err);
         return void Promise.reject(new Error('Failed to create folder'));
+    }
+}
+
+/**
+ * Create a folder with optional custom icon
+ */
+export async function createFolderWithIcon(prefix: string, name: string, iconData?: Buffer, iconType?: string): Promise<{ folderKey: string, iconUrl?: string }> {
+    if (typeof name !== 'string' || name.trim() === '') {
+        throw new Error('Folder name is required');
+    }
+
+    // ensure prefix ends with slash if non‐empty
+    const normalizedPrefix = prefix ? prefix.replace(/\/?$/, '/') : '';
+    const folderKey = `${normalizedPrefix}${name.replace(/\/?$/, '')}/`;
+
+    try {
+        // Create the folder
+        await s3Client.send(new PutObjectCommand({
+            Bucket: bucket,
+            Key: folderKey,
+            Body: '',
+            ContentType: 'application/x-directory'
+        }));
+
+        let iconUrl: string | undefined;
+
+        // Upload icon if provided
+        if (iconData && iconType) {
+            const iconKey = `icons/${folderKey.replace(/[^a-zA-Z0-9]/g, '_')}_icon.${iconType}`;
+            
+            await s3Client.send(new PutObjectCommand({
+                Bucket: bucket,
+                Key: iconKey,
+                Body: iconData,
+                ContentType: `image/${iconType}`
+            }));
+
+            iconUrl = `https://${bucket}.s3.ap-south-1.amazonaws.com/${iconKey}`;
+        }
+
+        return { folderKey, iconUrl };
+    } catch (err) {
+        console.error('Error creating folder with icon:', err);
+        throw new Error('Failed to create folder');
     }
 }
 
@@ -195,4 +250,115 @@ export async function deleteFolder(prefix: string): Promise<void> {
         console.error('Error deleting folder:', err);
         return void Promise.reject(new Error('Failed to delete folder'));
     }
+}
+
+/**
+ * Generate a signed URL for uploading a custom icon for a file or folder
+ */
+export async function uploadCustomIcon(itemPath: string, iconType: string): Promise<string> {
+    try {
+        // Create a unique icon path based on the item path
+        const iconKey = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon.${iconType}`;
+        
+        console.log('uploadCustomIcon Debug:', {
+            originalPath: itemPath,
+            iconType: iconType,
+            generatedKey: iconKey
+        });
+        
+        // Generate signed URL for uploading the icon
+        const command = new PutObjectCommand({ 
+            Bucket: bucket, 
+            Key: iconKey,
+            ContentType: `image/${iconType}`
+        });
+        
+        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+        console.log('Generated signed URL for icon upload:', signedUrl);
+        return signedUrl;
+    } catch (err) {
+        console.error('Error generating icon upload URL:', err);
+        throw new Error('Failed to generate icon upload URL');
+    }
+}
+
+/**
+ * Get the icon URL for a file or folder
+ */
+export async function getCustomIconUrl(itemPath: string): Promise<string | null> {
+    try {
+        const iconKey = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
+        
+        console.log('getCustomIconUrl Debug:', {
+            originalPath: itemPath,
+            sanitizedKey: iconKey
+        });
+        
+        // Check if any icon exists with common extensions
+        const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+        
+        for (const ext of extensions) {
+            try {
+                const fullIconKey = `${iconKey}.${ext}`;
+                console.log(`Checking icon: ${fullIconKey}`);
+                
+                const command = new GetObjectCommand({ Bucket: bucket, Key: fullIconKey });
+                await s3Client.send(command);
+                
+                // If we get here, the icon exists, return the public URL
+                const iconUrl = `https://${bucket}.s3.ap-south-1.amazonaws.com/${fullIconKey}`;
+                console.log(`Found icon: ${iconUrl}`);
+                return iconUrl;
+            } catch (err) {
+                // Icon with this extension doesn't exist, try next
+                console.log(`Icon not found for extension ${ext}: ${iconKey}.${ext}`);
+                continue;
+            }
+        }
+        
+        console.log(`No icon found for path: ${itemPath}`);
+        return null; // No icon found
+    } catch (err) {
+        console.error('Error getting custom icon URL:', err);
+        return null;
+    }
+}
+
+/**
+ * Update listChildren to include icon URLs
+ */
+export async function listChildrenWithIcons(prefix: string = '') {
+    // Ensure prefix is a string and handle empty case
+    const normalizedPrefix = typeof prefix === 'string' ? prefix : '';
+    
+    const data = new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: normalizedPrefix,
+        Delimiter: "/",
+    });
+
+    const response = await s3Client.send(data);
+
+    const folders: Array<{key: string, iconUrl?: string}> = [];
+    if (response.CommonPrefixes) {
+        for (const prefixObj of response.CommonPrefixes) {
+            const folderKey = prefixObj.Prefix || "";
+            const iconUrl = await getCustomIconUrl(folderKey);
+            folders.push({ key: folderKey, iconUrl: iconUrl || undefined });
+        }
+    }
+
+    const files: Array<{key: string, iconUrl?: string}> = [];
+    if (response.Contents) {
+        for (const content of response.Contents) {
+            const fileKey = content.Key || "";
+            // Skip the empty folder marker files and icon files
+            if (!fileKey.endsWith('/') && !fileKey.startsWith('icons/')) {
+                const iconUrl = await getCustomIconUrl(fileKey);
+                files.push({ key: fileKey, iconUrl: iconUrl || undefined });
+            }
+        }
+    }
+
+    return { folders, files };
 }

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder } from "./aws"
+import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons } from "./aws"
 
 const router = Router();
 
@@ -8,14 +8,17 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const prefix = req.body.prefix;
-      let decodedPrefix = `${prefix}/`;
-      if(prefix=="" || prefix.endsWith("/")){
-        decodedPrefix = prefix;
+      let decodedPrefix = '';
+      
+      // Handle undefined, null, or empty prefix
+      if (prefix && typeof prefix === 'string' && prefix.trim() !== '') {
+        decodedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
       }
-      const data = await listChildren(decodedPrefix);
+      
+      const data = await listChildrenWithIcons(decodedPrefix);
       res.json(data);
     } catch (err) {
-      console.error(err);
+      console.error('Error in /folders endpoint:', err);
       res.status(500).json({ error: "Failed to list children" });
     }
   }
@@ -52,19 +55,20 @@ router.post(
 
 //@ts-ignore
 router.post('/folders/create', async (req: Request, res: Response) => {
-  const { prefix = '', name } = req.body;
-
-  const response = await createFolder(prefix, name);
-
-  if (response=== void 0) {
-    return res.status(400).json({ error: 'Folder name is required' });
-  }
-
-  const normalizedPrefix = prefix ? prefix.replace(/\/?$/, '/') : '';
-  const folderKey = `${normalizedPrefix}${name.replace(/\/?$/, '')}/`;
-
   try {
-    const response = await createFolder(prefix, name);
+    const { prefix = '', name } = req.body;
+
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'Folder name is required' });
+    }
+
+    // Normalize prefix
+    const normalizedPrefix = prefix && typeof prefix === 'string' ? 
+      (prefix.endsWith('/') ? prefix : `${prefix}/`) : '';
+    
+    const folderKey = `${normalizedPrefix}${name.replace(/\/?$/, '')}/`;
+
+    await createFolder(normalizedPrefix, name.trim());
     return res.status(201).json({ message: 'Folder created', key: folderKey });
   } catch (err) {
     console.error('Error creating folder:', err);
@@ -145,6 +149,23 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Error deleting folder:', err);
     res.status(500).json({ error: 'Failed to delete folder' });
+  }
+});
+
+// @ts-ignore
+router.post('/icons/upload', async (req: Request, res: Response) => {
+  try {
+    const { itemPath, iconType = 'jpeg' } = req.body;
+    
+    if (!itemPath) {
+      return res.status(400).json({ error: 'Item path is required' });
+    }
+    
+    const iconUrl = await uploadCustomIcon(itemPath, iconType);
+    res.json({ iconUrl });
+  } catch (err) {
+    console.error('Error uploading icon:', err);
+    res.status(500).json({ error: 'Failed to upload custom icon' });
   }
 });
 
