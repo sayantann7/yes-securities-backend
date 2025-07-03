@@ -18,6 +18,7 @@ model User {
   updatedAt       DateTime  @default(now())
   createdAt       DateTime  @default(now())
   comments        Comment[]
+  notifications   Notification[]
   numberOfSignIns Int       @default(0)
   lastSignIn      DateTime? @default(now())
   timeSpent       Int       @default(0)
@@ -30,6 +31,19 @@ model Comment {
   userId     String
   documentId String
   updatedAt  DateTime @default(now())
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  type       String   // 'comment', 'upload', 'ping', 'alert'
+  title      String
+  message    String
+  read       Boolean  @default(false)
+  userId     String
+  documentId String?
+  senderId   String?
   createdAt  DateTime @default(now())
   user       User     @relation(fields: [userId], references: [id])
 }

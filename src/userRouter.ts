@@ -306,6 +306,10 @@ router.post("/comment", async (req: Request, res: Response) => {
       where: { email: String(email) },
     });
 
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     // Save comment to database
     const newComment = await prisma.comment.create({
       //@ts-ignore
@@ -315,6 +319,37 @@ router.post("/comment", async (req: Request, res: Response) => {
         content: comment,
       },
     });
+
+    // Send notifications to admin and sales team members (excluding the comment author)
+    try {
+      const recipients = await prisma.user.findMany({
+        where: {
+          AND: [
+            { id: { not: user.id } },
+            { role: { in: ['admin', 'sales'] } }
+          ]
+        }
+      });
+
+      // Create notifications for all recipients
+      if (recipients.length > 0) {
+        const notifications = recipients.map(recipient => ({
+          type: 'comment',
+          title: 'New Comment',
+          message: `${user.fullname} commented on a document: ${comment.substring(0, 100)}${comment.length > 100 ? '...' : ''}`,
+          userId: recipient.id,
+          documentId: String(documentId),
+          senderId: user.id
+        }));
+
+        await prisma.notification.createMany({
+          data: notifications
+        });
+      }
+    } catch (notificationError) {
+      console.error('Failed to send comment notifications:', notificationError);
+      // Don't fail the comment creation if notification fails
+    }
 
     res.json({ 
       message: "Comment added successfully", 
@@ -394,7 +429,6 @@ router.delete("/comment", async (req: Request, res: Response) => {
 });
 
 // @ts-ignore
-// …existing imports…
 router.get("/comments", async (req, res) => {
   try {
     const { documentId } = req.query;
@@ -488,6 +522,615 @@ router.post("/recent-documents", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update recent documents" });
+  }
+});
+
+// Get notifications for current user
+// @ts-ignore
+router.get("/notifications", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    const notifications = await prisma.notification.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 50, // Limit to last 50 notifications
+    });
+
+    res.json({ notifications });
+  } catch (error: any) {
+    console.error("Error fetching notifications:", error);
+    res.status(500).json({ error: "Failed to fetch notifications" });
+  }
+});
+
+// Mark notification as read
+// @ts-ignore
+router.put("/notifications/:id/read", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    const notificationId = req.params.id;
+
+    await prisma.notification.updateMany({
+      where: { 
+        id: notificationId,
+        userId: userId // Ensure user can only update their own notifications
+      },
+      data: { read: true }
+    });
+
+    res.json({ message: "Notification marked as read" });
+  } catch (error: any) {
+    console.error("Error marking notification as read:", error);
+    res.status(500).json({ error: "Failed to mark notification as read" });
+  }
+});
+
+// Mark all notifications as read
+// @ts-ignore
+router.put("/notifications/mark-all-read", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    await prisma.notification.updateMany({
+      where: { userId },
+      data: { read: true }
+    });
+
+    res.json({ message: "All notifications marked as read" });
+  } catch (error: any) {
+    console.error("Error marking all notifications as read:", error);
+    res.status(500).json({ error: "Failed to mark all notifications as read" });
+  }
+});
+
+// Send comment notification
+// @ts-ignore
+router.post("/notifications/comment", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const senderId = decoded.userId;
+
+    const { documentId, commentText } = req.body;
+
+    // Get sender info
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId }
+    });
+
+    if (!sender) {
+      return res.status(404).json({ error: "Sender not found" });
+    }
+
+    // Get all admin and sales team members (excluding the sender)
+    const recipients = await prisma.user.findMany({
+      where: {
+        AND: [
+          { id: { not: senderId } },
+          { role: { in: ['admin', 'sales'] } }
+        ]
+      }
+    });
+
+    // Create notifications for all recipients
+    const notifications = recipients.map(recipient => ({
+      type: 'comment',
+      title: 'New Comment',
+      message: `${sender.fullname} commented on a document: ${commentText}`,
+      userId: recipient.id,
+      documentId,
+      senderId
+    }));
+
+    await prisma.notification.createMany({
+      data: notifications
+    });
+
+    res.json({ message: "Comment notifications sent" });
+  } catch (error: any) {
+    console.error("Error sending comment notification:", error);
+    res.status(500).json({ error: "Failed to send comment notification" });
+  }
+});
+
+// Send upload notification (admin only)
+// @ts-ignore
+router.post("/notifications/upload", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const senderId = decoded.userId;
+
+    // Verify sender is admin
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId }
+    });
+
+    if (!sender || sender.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { fileName, folderPath } = req.body;
+
+    // Get all users except admin
+    const recipients = await prisma.user.findMany({
+      where: {
+        AND: [
+          { id: { not: senderId } },
+          { role: { not: 'admin' } }
+        ]
+      }
+    });
+
+    // Create notifications for all recipients
+    const notifications = recipients.map(recipient => ({
+      type: 'upload',
+      title: 'New Document Uploaded',
+      message: `Admin uploaded new files: ${fileName} in ${folderPath}`,
+      userId: recipient.id,
+      senderId
+    }));
+
+    await prisma.notification.createMany({
+      data: notifications
+    });
+
+    res.json({ message: "Upload notifications sent" });
+  } catch (error: any) {
+    console.error("Error sending upload notification:", error);
+    res.status(500).json({ error: "Failed to send upload notification" });
+  }
+});
+
+// Get inactive users (admin only)
+// @ts-ignore
+router.get("/admin/inactive-users", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const days = parseInt(req.query.days as string) || 7;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const inactiveUsers = await prisma.user.findMany({
+      where: {
+        AND: [
+          { role: { not: 'admin' } },
+          { 
+            OR: [
+              { lastSignIn: { lt: cutoffDate } },
+              { lastSignIn: null }
+            ]
+          }
+        ]
+      },
+      select: {
+        id: true,
+        fullname: true,
+        email: true,
+        lastSignIn: true
+      }
+    });
+
+    const inactiveUsersWithDays = inactiveUsers.map(user => {
+      const daysInactive = user.lastSignIn 
+        ? Math.floor((new Date().getTime() - user.lastSignIn.getTime()) / (1000 * 60 * 60 * 24))
+        : 365; // If never signed in, consider as 365 days
+
+      return {
+        id: user.id,
+        name: user.fullname,
+        email: user.email,
+        lastSignIn: user.lastSignIn?.toISOString() || 'Never',
+        daysInactive
+      };
+    });
+
+    res.json({ inactiveUsers: inactiveUsersWithDays });
+  } catch (error: any) {
+    console.error("Error fetching inactive users:", error);
+    res.status(500).json({ error: "Failed to fetch inactive users" });
+  }
+});
+
+// Ping inactive users (admin only)
+// @ts-ignore
+router.post("/admin/ping-users", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const senderId = decoded.userId;
+
+    // Verify sender is admin
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId }
+    });
+
+    if (!sender || sender.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { userIds, message } = req.body;
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: "User IDs array is required" });
+    }
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    // Create notifications for selected users
+    const notifications = userIds.map(userId => ({
+      type: 'ping',
+      title: 'Message from Admin',
+      message: message.trim(),
+      userId,
+      senderId
+    }));
+
+    await prisma.notification.createMany({
+      data: notifications
+    });
+
+    res.json({ message: "Ping notifications sent" });
+  } catch (error: any) {
+    console.error("Error pinging users:", error);
+    res.status(500).json({ error: "Failed to ping users" });
+  }
+});
+
+// Get all users with metrics (admin only)
+// @ts-ignore
+router.get("/admin/users-metrics", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    // Get all users with their metrics
+    const allUsers = await prisma.user.findMany({
+      where: {
+        role: { not: 'admin' }
+      },
+      select: {
+        id: true,
+        fullname: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        lastSignIn: true,
+        numberOfSignIns: true,
+        documentsViewed: true,
+        timeSpent: true,
+        recentDocs: true
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Calculate days inactive for each user
+    const usersWithMetrics = allUsers.map(user => {
+      const lastSignIn = user.lastSignIn ? new Date(user.lastSignIn) : null;
+      const daysInactive = lastSignIn 
+        ? Math.floor((new Date().getTime() - lastSignIn.getTime()) / (1000 * 60 * 60 * 24))
+        : 999; // Very high number for users who never signed in
+
+      return {
+        ...user,
+        daysInactive,
+        lastSignIn: user.lastSignIn?.toISOString() || 'Never'
+      };
+    });
+
+    // Calculate overall metrics
+    const totalUsers = allUsers.length;
+    const activeUsers = usersWithMetrics.filter(u => u.daysInactive <= 7).length;
+    const inactiveUsers = totalUsers - activeUsers;
+    const totalTimeSpent = allUsers.reduce((sum, user) => sum + user.timeSpent, 0);
+    const totalDocumentViews = allUsers.reduce((sum, user) => sum + user.documentsViewed, 0);
+    const totalSignIns = allUsers.reduce((sum, user) => sum + user.numberOfSignIns, 0);
+    
+    // New users this week
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    const newUsersThisWeek = allUsers.filter(user => new Date(user.createdAt) >= oneWeekAgo).length;
+    
+    // Most active user
+    const mostActiveUser = allUsers.reduce((prev, current) => 
+      current.timeSpent > prev.timeSpent ? current : prev,
+      allUsers[0] || { fullname: 'N/A', timeSpent: 0 }
+    );
+
+    const overallMetrics = {
+      totalUsers,
+      activeUsers,
+      inactiveUsers,
+      averageTimeSpent: totalUsers > 0 ? Math.round(totalTimeSpent / totalUsers) : 0,
+      totalDocumentViews,
+      averageSignIns: totalUsers > 0 ? Math.round(totalSignIns / totalUsers) : 0,
+      newUsersThisWeek,
+      mostActiveUser: {
+        name: mostActiveUser.fullname,
+        timeSpent: mostActiveUser.timeSpent
+      }
+    };
+
+    res.json({ 
+      users: usersWithMetrics,
+      overallMetrics
+    });
+  } catch (error: any) {
+    console.error("Error fetching user metrics:", error);
+    res.status(500).json({ error: "Failed to fetch user metrics" });
+  }
+});
+
+// Get all comments grouped by document (admin only)
+// @ts-ignore
+router.get("/admin/comments", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    // Get all comments with user details
+    const comments = await prisma.comment.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullname: true,
+            email: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Group comments by document
+    const documentGroups: { [key: string]: any[] } = {};
+    
+    comments.forEach(comment => {
+      if (!documentGroups[comment.documentId]) {
+        documentGroups[comment.documentId] = [];
+      }
+      documentGroups[comment.documentId].push(comment);
+    });
+
+    // Convert to array format with proper document names
+    const documents = Object.keys(documentGroups).map(documentId => {
+      // Extract filename from documentId (which is typically a file path)
+      const documentName = documentId.includes('/') 
+        ? documentId.split('/').pop() || documentId 
+        : documentId;
+      
+      return {
+        documentId,
+        documentName: documentName,
+        comments: documentGroups[documentId].map(comment => ({
+          id: comment.id,
+          documentId: comment.documentId,
+          content: comment.content,
+          createdAt: comment.createdAt,
+          updatedAt: comment.updatedAt,
+          userId: comment.userId,
+          user: comment.user
+        }))
+      };
+    });
+
+    res.json({ documents });
+  } catch (error: any) {
+    console.error("Error fetching admin comments:", error);
+    res.status(500).json({ error: "Failed to fetch comments" });
+  }
+});
+
+// Get comments for specific document (admin only)
+// @ts-ignore
+router.get("/admin/comments/:documentId", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { documentId } = req.params;
+
+    const comments = await prisma.comment.findMany({
+      where: { documentId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullname: true,
+            email: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ comments });
+  } catch (error: any) {
+    console.error("Error fetching document comments:", error);
+    res.status(500).json({ error: "Failed to fetch document comments" });
+  }
+});
+
+// Reply to comment as admin
+// @ts-ignore
+router.post("/admin/comment-reply", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { documentId, comment } = req.body;
+
+    if (!documentId || !comment) {
+      return res.status(400).json({ error: "Document ID and comment are required" });
+    }
+
+    const newComment = await prisma.comment.create({
+      data: {
+        content: comment,
+        documentId,
+        userId
+      }
+    });
+
+    res.json({ 
+      message: "Reply added successfully",
+      comment: newComment
+    });
+  } catch (error: any) {
+    console.error("Error adding admin reply:", error);
+    res.status(500).json({ error: "Failed to add reply" });
+  }
+});
+
+// Delete comment (admin only)
+// @ts-ignore
+router.delete("/admin/comment/:commentId", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+
+    // Verify user is admin
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { commentId } = req.params;
+
+    await prisma.comment.delete({
+      where: { id: commentId }
+    });
+
+    res.json({ message: "Comment deleted successfully" });
+  } catch (error: any) {
+    console.error("Error deleting comment:", error);
+    res.status(500).json({ error: "Failed to delete comment" });
   }
 });
 
