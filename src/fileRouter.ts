@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons } from "./aws"
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../src/generated/prisma";
 import jwt from "jsonwebtoken";
 
 const router = Router();
@@ -45,18 +45,20 @@ router.post(
         userBookmarks = await prisma.bookmark.findMany({
           where: { userId },
           select: {
-            documentId: true,
-            folderId: true
+            itemId: true,
+            itemName: true,
+            itemType: true,
+            createdAt: true,
           }
         });
       }
       
       // Create sets for quick lookup
       const bookmarkedDocumentIds = new Set(
-        userBookmarks.filter((b: any) => b.documentId).map((b: any) => b.documentId)
+        userBookmarks.filter((b: any) => b.itemType === 'document').map((b: any) => b.itemId)
       );
       const bookmarkedFolderIds = new Set(
-        userBookmarks.filter((b: any) => b.folderId).map((b: any) => b.folderId)
+        userBookmarks.filter((b: any) => b.itemType === 'folder').map((b: any) => b.itemId)
       );
       
       // Add isBookmarked property to folders
