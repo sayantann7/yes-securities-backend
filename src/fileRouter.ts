@@ -42,6 +42,7 @@ router.post(
       // If user is authenticated, get bookmark information
       let userBookmarks: any[] = [];
       if (userId) {
+        console.log('🔍 Fetching bookmarks for user:', userId);
         userBookmarks = await prisma.bookmark.findMany({
           where: { userId },
           select: {
@@ -51,6 +52,7 @@ router.post(
             createdAt: true,
           }
         });
+        console.log('📚 Found bookmarks:', userBookmarks.length);
       }
       
       // Create sets for quick lookup
@@ -60,6 +62,9 @@ router.post(
       const bookmarkedFolderIds = new Set(
         userBookmarks.filter((b: any) => b.itemType === 'folder').map((b: any) => b.itemId)
       );
+      
+      console.log('📋 Bookmarked document IDs:', Array.from(bookmarkedDocumentIds));
+      console.log('📁 Bookmarked folder IDs:', Array.from(bookmarkedFolderIds));
       
       // Add isBookmarked property to folders
       const foldersWithBookmarks = data.folders.map(folder => ({
@@ -72,6 +77,9 @@ router.post(
         ...file,
         isBookmarked: userId ? bookmarkedDocumentIds.has(file.key) : false
       }));
+      
+      console.log('📁 Folders with bookmark status:', foldersWithBookmarks.map(f => ({ key: f.key, isBookmarked: f.isBookmarked })));
+      console.log('📄 Files with bookmark status:', filesWithBookmarks.map(f => ({ key: f.key, isBookmarked: f.isBookmarked })));
       
       res.json({
         folders: foldersWithBookmarks,
