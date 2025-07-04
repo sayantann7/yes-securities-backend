@@ -1,13 +1,35 @@
 import { Router, Request, Response } from "express";
 import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons } from "./aws"
+import { PrismaClient } from "@prisma/client";
+import jwt from "jsonwebtoken";
 
 const router = Router();
+const prisma = new PrismaClient();
+const JWT_SECRET = process.env.JWT_SECRET;
 
 router.post(
   "/folders",
   async (req: Request, res: Response) => {
     try {
       const prefix = req.body.prefix;
+      
+      // Check for authentication token
+      const authHeader = req.headers.authorization;
+      let userId = null;
+      
+      if (authHeader) {
+        const token = authHeader.split(" ")[1];
+        if (token) {
+          try {
+            const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+            userId = decoded.userId;
+          } catch (error) {
+            // Token is invalid, but we'll continue without user-specific data
+            console.log('Invalid token provided');
+          }
+        }
+      }
+      
       let decodedPrefix = '';
       
       // Handle undefined, null, or empty prefix
@@ -16,7 +38,43 @@ router.post(
       }
       
       const data = await listChildrenWithIcons(decodedPrefix);
-      res.json(data);
+      
+      // If user is authenticated, get bookmark information
+      let userBookmarks: any[] = [];
+      if (userId) {
+        userBookmarks = await prisma.bookmark.findMany({
+          where: { userId },
+          select: {
+            documentId: true,
+            folderId: true
+          }
+        });
+      }
+      
+      // Create sets for quick lookup
+      const bookmarkedDocumentIds = new Set(
+        userBookmarks.filter((b: any) => b.documentId).map((b: any) => b.documentId)
+      );
+      const bookmarkedFolderIds = new Set(
+        userBookmarks.filter((b: any) => b.folderId).map((b: any) => b.folderId)
+      );
+      
+      // Add isBookmarked property to folders
+      const foldersWithBookmarks = data.folders.map(folder => ({
+        ...folder,
+        isBookmarked: userId ? bookmarkedFolderIds.has(folder.key) : false
+      }));
+      
+      // Add isBookmarked property to files
+      const filesWithBookmarks = data.files.map(file => ({
+        ...file,
+        isBookmarked: userId ? bookmarkedDocumentIds.has(file.key) : false
+      }));
+      
+      res.json({
+        folders: foldersWithBookmarks,
+        files: filesWithBookmarks
+      });
     } catch (err) {
       console.error('Error in /folders endpoint:', err);
       res.status(500).json({ error: "Failed to list children" });

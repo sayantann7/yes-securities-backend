@@ -19,6 +19,7 @@ model User {
   createdAt       DateTime  @default(now())
   comments        Comment[]
   notifications   Notification[]
+  bookmarks       Bookmark[]
   numberOfSignIns Int       @default(0)
   lastSignIn      DateTime? @default(now())
   timeSpent       Int       @default(0)
@@ -46,4 +47,16 @@ model Notification {
   senderId   String?
   createdAt  DateTime @default(now())
   user       User     @relation(fields: [userId], references: [id])
+}
+
+model Bookmark {
+  id         String   @id @default(cuid())
+  userId     String
+  itemId     String   // Can be document ID or folder ID (S3 key)
+  itemType   String   // 'document' or 'folder'
+  itemName   String   // Name of the bookmarked item
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+  
+  @@unique([userId, itemId]) // Prevent duplicate bookmarks
 }

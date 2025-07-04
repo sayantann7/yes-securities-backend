@@ -1134,4 +1134,103 @@ router.delete("/admin/comment/:commentId", async (req, res) => {
   }
 });
 
+// Bookmark endpoints
+// @ts-ignore
+router.post("/bookmarks", async (req: Request, res: Response) => {
+  try {
+    const { itemId, itemType, itemName } = req.body;
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "User not authenticated" });
+    }
+
+    if (!itemId || !itemType || !itemName) {
+      return res.status(400).json({ error: "itemId, itemType, and itemName are required" });
+    }
+
+    if (!['document', 'folder'].includes(itemType)) {
+      return res.status(400).json({ error: "itemType must be 'document' or 'folder'" });
+    }
+
+    // Check if bookmark already exists
+    const existingBookmark = await prisma.bookmark.findUnique({
+      where: {
+        userId_itemId: {
+          userId,
+          itemId
+        }
+      }
+    });
+
+    if (existingBookmark) {
+      return res.status(409).json({ error: "Item already bookmarked" });
+    }
+
+    const bookmark = await prisma.bookmark.create({
+      data: {
+        userId,
+        itemId,
+        itemType,
+        itemName
+      }
+    });
+
+    res.json({ message: "Bookmark created successfully", bookmark });
+  } catch (error: any) {
+    console.error("Error creating bookmark:", error);
+    res.status(500).json({ error: "Failed to create bookmark" });
+  }
+});
+
+// @ts-ignore
+router.delete("/bookmarks/:itemId", async (req: Request, res: Response) => {
+  try {
+    const { itemId } = req.params;
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "User not authenticated" });
+    }
+
+    const deletedBookmark = await prisma.bookmark.delete({
+      where: {
+        userId_itemId: {
+          userId,
+          itemId
+        }
+      }
+    });
+
+    res.json({ message: "Bookmark removed successfully" });
+  } catch (error: any) {
+    console.error("Error removing bookmark:", error);
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: "Bookmark not found" });
+    }
+    res.status(500).json({ error: "Failed to remove bookmark" });
+  }
+});
+
+// @ts-ignore
+router.get("/bookmarks", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "User not authenticated" });
+    }
+
+    const bookmarks = await prisma.bookmark.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ bookmarks });
+  } catch (error: any) {
+    console.error("Error fetching bookmarks:", error);
+    res.status(500).json({ error: "Failed to fetch bookmarks" });
+  }
+});
+
 export default router;
