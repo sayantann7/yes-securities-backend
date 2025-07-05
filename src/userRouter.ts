@@ -55,6 +55,9 @@ router.post("/signin", async (req: Request, res: Response) => {
         createdAt: updatedUser.createdAt,
         lastSignIn: updatedUser.lastSignIn,
         numberOfSignIns: updatedUser.numberOfSignIns,
+        timeSpent : updatedUser.timeSpent,
+        documentsViewed: updatedUser.documentsViewed,
+        recentDocs: updatedUser.recentDocs
       }
     });
   } catch (err) {
