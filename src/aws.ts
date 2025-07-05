@@ -305,9 +305,9 @@ export async function getCustomIconUrl(itemPath: string): Promise<string | null>
                 const command = new GetObjectCommand({ Bucket: bucket, Key: fullIconKey });
                 await s3Client.send(command);
                 
-                // If we get here, the icon exists, return the public URL
-                const iconUrl = `https://${bucket}.s3.ap-south-1.amazonaws.com/${fullIconKey}`;
-                console.log(`Found icon: ${iconUrl}`);
+                // If we get here, the icon exists, return a signed URL instead of public URL
+                const iconUrl = await getSignedDownloadUrl(fullIconKey);
+                console.log(`Found icon, generated signed URL: ${iconUrl}`);
                 return iconUrl;
             } catch (err) {
                 // Icon with this extension doesn't exist, try next

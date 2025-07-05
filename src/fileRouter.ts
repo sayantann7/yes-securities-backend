@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons } from "./aws"
+import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons, getCustomIconUrl } from "./aws"
 import { PrismaClient } from "../src/generated/prisma";
 import jwt from "jsonwebtoken";
 
@@ -229,11 +229,34 @@ router.post('/icons/upload', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Item path is required' });
     }
     
-    const iconUrl = await uploadCustomIcon(itemPath, iconType);
-    res.json({ iconUrl });
+    const uploadUrl = await uploadCustomIcon(itemPath, iconType);
+    res.json({ uploadUrl });
   } catch (err) {
     console.error('Error uploading icon:', err);
     res.status(500).json({ error: 'Failed to upload custom icon' });
+  }
+});
+
+// @ts-ignore
+router.get('/icons/:itemPath', async (req: Request, res: Response) => {
+  try {
+    const { itemPath } = req.params;
+    
+    if (!itemPath) {
+      return res.status(400).json({ error: 'Item path is required' });
+    }
+    
+    const decodedPath = decodeURIComponent(itemPath);
+    const iconUrl = await getCustomIconUrl(decodedPath);
+    
+    if (!iconUrl) {
+      return res.status(404).json({ error: 'Icon not found' });
+    }
+    
+    res.json({ iconUrl });
+  } catch (err) {
+    console.error('Error getting icon URL:', err);
+    res.status(500).json({ error: 'Failed to get icon URL' });
   }
 });
 
