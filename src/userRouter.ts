@@ -455,6 +455,43 @@ router.get("/comments", async (req, res) => {
 });
 
 // @ts-ignore
+router.get("/comments/all", async (req, res) => {
+  try {
+    // Get all comments with user details
+    const comments = await prisma.comment.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullname: true,
+            email: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Group comments by document
+    const commentsByDocument: { [key: string]: any[] } = {};
+    
+    comments.forEach(comment => {
+      if (!commentsByDocument[comment.documentId]) {
+        commentsByDocument[comment.documentId] = [];
+      }
+      commentsByDocument[comment.documentId].push(comment);
+    });
+
+    res.json({
+      message: "All comments fetched successfully",
+      commentsByDocument,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch comments" });
+  }
+});
+
+// @ts-ignore
 router.get("/recent-documents", async (req, res) => {
   try {
     const { userEmail: recentUserEmail } = req.query;
