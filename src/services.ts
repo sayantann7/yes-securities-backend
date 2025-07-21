@@ -1,6 +1,5 @@
 import bcrypt from 'bcrypt';
 import { PrismaClient, User } from "../src/generated/prisma";
-import nodemailer from 'nodemailer';
 
 const SALT_ROUNDS = 10;
 
@@ -30,72 +29,36 @@ export async function createUser(input: NewUserInput): Promise<User> {
 
 /**
  * Deletes a user (or marks inactive) by their email.
+ * First deletes all related records to avoid foreign key constraints.
  */
 export async function deleteUserByEmail(email: string): Promise<void> {
-  await prisma.user.delete({
+  // Get the user ID first
+  const user = await prisma.user.findUnique({
     where: { email },
+    select: { id: true }
   });
-}
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: +process.env.SMTP_PORT!,
-  secure: !!process.env.SMTP_SECURE,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+  if (!user) {
+    throw new Error(`User with email ${email} not found`);
+  }
 
-/**
- * Send welcome email with generated password.
- */
-export async function sendWelcomeEmail(
-  to: string,
-  password: string
-): Promise<void> {
-  const mailOptions = {
-    from: `"Your App Name" <${process.env.SMTP_FROM}>`,
-    to,
-    subject: 'Welcome to the App',
-    text: `
-Hi there,
-
-Your account has been created. You can log in with:
-
-  Email: ${to}
-  Password: ${password}
-
-Please change your password after logging in.
-
-Thanks,
-The Team
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
-}
-
-/**
- * Notify user of account removal.
- */
-export async function sendRemovalNotice(to: string): Promise<void> {
-  const mailOptions = {
-    from: `"Your App Name" <${process.env.SMTP_FROM}>`,
-    to,
-    subject: 'Your Account Has Been Removed',
-    text: `
-Hello,
-
-This is to inform you that your access to the app has been revoked
-as you are no longer with the company.
-
-If you believe this is a mistake, please contact the administrator.
-
-Regards,
-The Team
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
+  // Delete related records first to avoid foreign key constraints
+  await prisma.$transaction([
+    // Delete comments
+    prisma.comment.deleteMany({
+      where: { userId: user.id }
+    }),
+    // Delete notifications
+    prisma.notification.deleteMany({
+      where: { userId: user.id }
+    }),
+    // Delete bookmarks
+    prisma.bookmark.deleteMany({
+      where: { userId: user.id }
+    }),
+    // Finally delete the user
+    prisma.user.delete({
+      where: { email }
+    })
+  ]);
 }

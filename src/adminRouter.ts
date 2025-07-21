@@ -1,9 +1,8 @@
 import express from 'express';
 import multer from 'multer';
 import xlsx from 'xlsx';
-import crypto from 'crypto';
 import { PrismaClient } from "../src/generated/prisma";
-import { createUser, deleteUserByEmail, sendWelcomeEmail, sendRemovalNotice } from './services';
+import { deleteUserByEmail } from './services';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -19,7 +18,7 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       // Parse the uploaded Excel file
       const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const uploadedEmployees: Array<{ fullname?: string; email: string }> =
+      const uploadedEmployees: Array<{ fullname?: string; email: string; 'ad-id'?: string }> =
         xlsx.utils.sheet_to_json(sheet);
 
       // Get all current non-admin users from the database
@@ -59,7 +58,6 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
         if (!uploadedEmails.has(email)) {
           try {
             await deleteUserByEmail(email);
-            await sendRemovalNotice(email);
             results.removed++;
           } catch (err: any) {
             results.errors.push(`Failed to remove user ${email}: ${err.message || err}`);
@@ -73,18 +71,30 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       for (const employee of uploadedEmployees) {
         const email = employee.email?.trim().toLowerCase();
         const fullname = employee.fullname?.trim() || '';
+        const adId = employee['ad-id']?.trim();
         
         if (!email) {
           results.errors.push(`Missing email in uploaded file`);
           continue;
         }
 
+        if (!adId) {
+          results.errors.push(`Missing ad-id for user ${email} in uploaded file`);
+          continue;
+        }
+
         if (!currentUsersByEmail.has(email)) {
           try {
-            // Generate random password for new user
-            const password = crypto.randomBytes(6).toString('base64');
-            await createUser({ fullname, email, password });
-            await sendWelcomeEmail(email, password);
+            // Store ad-id directly as password without hashing
+            await prisma.user.create({
+              data: {
+                fullname,
+                email,
+                password: adId,
+                role: 'user',
+              },
+            });
+            
             results.added++;
           } catch (err: any) {
             results.errors.push(`Failed to add user ${email}: ${err.message || err}`);
