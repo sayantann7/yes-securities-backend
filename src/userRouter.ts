@@ -177,6 +177,47 @@ router.post("/updateTime", async (req: Request, res: Response) => {
 });
 
 // @ts-ignore
+router.put("/changePassword", async (req: Request, res: Response) => {
+  try {
+    const { email, currentPassword, newPassword } = req.body;
+
+    if (!email || !currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Email, current password, and new password are required" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(email) },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check if current password is correct
+    if (user.password !== String(currentPassword)) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    // Update password (store directly without hashing since we're not using bcrypt)
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: String(newPassword),
+        updatedAt: new Date(),
+      },
+    });
+
+    res.json({ 
+      message: "Password updated successfully"
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update password" });
+  }
+});
+
+// @ts-ignore
 router.get("/getBiweeklyMetrics", async (req: Request, res: Response) => {
   try {
     // Get current date
