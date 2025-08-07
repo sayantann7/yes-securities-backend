@@ -3,9 +3,16 @@
 
 echo "Stopping Yes Securities Admin Web App..."
 
+# Get the script directory (root directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Admin app directory
+ADMIN_DIR="$SCRIPT_DIR/sales_team_repo/ys-web-app/admin-app"
+
+echo "Looking for admin app in: $ADMIN_DIR"
+
 # Check if PID file exists
-if [ -f "~/sales_team_repos/ys-web-app/admin.pid" ]; then
-    ADMIN_PID=$(cat ~/sales_team_repos/ys-web-app/admin.pid)
+if [ -f "$ADMIN_DIR/admin.pid" ]; then
+    ADMIN_PID=$(cat "$ADMIN_DIR/admin.pid")
     
     # Check if process is still running
     if ps -p $ADMIN_PID > /dev/null; then
@@ -27,7 +34,7 @@ if [ -f "~/sales_team_repos/ys-web-app/admin.pid" ]; then
     fi
     
     # Remove PID file
-    rm -f ~/sales_team_repos/ys-web-app/admin.pid
+    rm -f "$ADMIN_DIR/admin.pid"
 else
     echo "No PID file found. Attempting to kill admin processes..."
     
