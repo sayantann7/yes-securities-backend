@@ -1,9 +1,8 @@
 import bcrypt from 'bcrypt';
-import { PrismaClient, User } from "../src/generated/prisma";
+import { User } from "../src/generated/prisma";
+import { prisma } from "./prisma";
 
 const SALT_ROUNDS = 10;
-
-const prisma = new PrismaClient();
 
 export interface NewUserInput {
   fullname: string;

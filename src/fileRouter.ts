@@ -1,10 +1,9 @@
 import { Router, Request, Response } from "express";
 import { getSignedDownloadUrl, getSignedUploadUrl, listChildren, createFolder, renameFile, deleteFile, renameFolder, deleteFolder, uploadCustomIcon, listChildrenWithIcons, getCustomIconUrl } from "./aws"
-import { PrismaClient } from "../src/generated/prisma";
+import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
 
 const router = Router();
-const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET;
 
 router.post(

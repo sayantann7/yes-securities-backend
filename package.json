@@ -4,9 +4,14 @@
   "main": "index.js",
   "scripts": {
     "dev": "npm run build && npm run start",
+    "dev-safe": "npm run build && node --unhandled-rejections=warn dist/index.js",
+    "dev-monitor": "./monitor-backend.sh",
     "build": "tsc",
     "start": "node dist/index.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset --force",
+    "db:studio": "prisma studio"
   },
   "keywords": [],
   "author": "",

@@ -1,12 +1,11 @@
 import express from 'express';
 import multer from 'multer';
 import xlsx from 'xlsx';
-import { PrismaClient } from "../src/generated/prisma";
+import { prisma } from "./prisma";
 import { deleteUserByEmail } from './services';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
-const prisma = new PrismaClient();
 
 //@ts-ignore
 router.post('/users/import', upload.single('file'), async (req, res) => {

@@ -1,10 +1,8 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient } from "../src/generated/prisma";
+import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
 
 const router = Router();
-
-const prisma = new PrismaClient();
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -372,6 +370,10 @@ router.post("/comment", async (req: Request, res: Response) => {
             { id: { not: user.id } },
             { role: { in: ['admin', 'sales'] } }
           ]
+        },
+        select: {
+          id: true,
+          fullname: true
         }
       });
 
@@ -387,12 +389,14 @@ router.post("/comment", async (req: Request, res: Response) => {
         }));
 
         await prisma.notification.createMany({
-          data: notifications
+          data: notifications,
+          skipDuplicates: true
         });
       }
     } catch (notificationError) {
       console.error('Failed to send comment notifications:', notificationError);
       // Don't fail the comment creation if notification fails
+      // Log the error but continue with the response
     }
 
     res.json({ 
@@ -608,7 +612,7 @@ router.post("/recent-documents", async (req, res) => {
 
 // Get notifications for current user
 // @ts-ignore
-router.get("/notifications", async (req, res) => {
+router.get("/notifications", async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -616,8 +620,24 @@ router.get("/notifications", async (req, res) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    
+    if (!JWT_SECRET) {
+      console.error('JWT_SECRET is not configured');
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET) as any;
+    } catch (jwtError) {
+      console.error('JWT verification failed:', jwtError);
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
     const userId = decoded.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Invalid token format" });
+    }
 
     const notifications = await prisma.notification.findMany({
       where: { userId },
@@ -634,7 +654,7 @@ router.get("/notifications", async (req, res) => {
 
 // Mark notification as read
 // @ts-ignore
-router.put("/notifications/:id/read", async (req, res) => {
+router.put("/notifications/:id/read", async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -642,10 +662,29 @@ router.put("/notifications/:id/read", async (req, res) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    
+    if (!JWT_SECRET) {
+      console.error('JWT_SECRET is not configured');
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET) as any;
+    } catch (jwtError) {
+      console.error('JWT verification failed:', jwtError);
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
     const userId = decoded.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Invalid token format" });
+    }
 
     const notificationId = req.params.id;
+    if (!notificationId) {
+      return res.status(400).json({ error: "Notification ID is required" });
+    }
 
     await prisma.notification.updateMany({
       where: { 
