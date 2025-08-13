@@ -1,6 +1,6 @@
 import express from "express";
 require("dotenv").config();
-import fileRouter from "./fileRouter";
+import fileRouter from "./fileRouterOptimized";
 import userRouter from "./userRouter";
 import adminRouter from "./adminRouter";
 import cors from "cors";

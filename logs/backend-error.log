@@ -1,0 +1,16 @@
+❌ Database connection failed: PrismaClientInitializationError: 
+Invalid `prisma.$queryRaw()` invocation:
+
+
+Can't reach database server at `ep-jolly-heart-a7vatg64-pooler.ap-southeast-2.aws.neon.tech:5432`
+
+Please make sure your database server is running at `ep-jolly-heart-a7vatg64-pooler.ap-southeast-2.aws.neon.tech:5432`.
+    at Zn.handleRequestError (/home/sayantan/yes-securities-backend/node_modules/@prisma/client/runtime/library.js:121:7759)
+    at Zn.handleAndLogRequestError (/home/sayantan/yes-securities-backend/node_modules/@prisma/client/runtime/library.js:121:6784)
+    at Zn.request (/home/sayantan/yes-securities-backend/node_modules/@prisma/client/runtime/library.js:121:6491)
+    at async l (/home/sayantan/yes-securities-backend/node_modules/@prisma/client/runtime/library.js:130:9778) {
+  clientVersion: '6.11.0',
+  errorCode: undefined,
+  retryable: undefined
+}
+Server will continue but may experience issues
