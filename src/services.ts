@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import { User } from "../src/generated/prisma";
+import { User } from "@prisma/client";
 import { prisma } from "./prisma";
 
 const SALT_ROUNDS = 10;
