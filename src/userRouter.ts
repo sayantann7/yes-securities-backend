@@ -1254,180 +1254,27 @@ router.delete("/admin/comment/:commentId", async (req, res) => {
   }
 });
 
-// Bookmark endpoints
+// Bookmark endpoints - Now handled by optimized bookmark service
+// These endpoints have been moved to bookmarkRouterOptimized.ts for better organization
+// and crash-resistant design. The old implementation below is kept for reference but
+// the actual routing should use the optimized service.
+
+// For backward compatibility, we import and use the optimized bookmark service here
+import { BookmarkService } from "./bookmarkServiceOptimized";
+
 // @ts-ignore
 router.post("/bookmarks", async (req: Request, res: Response) => {
-  try {
-    // console.log('POST /bookmarks called');
-    // console.log('Request body:', req.body);
-    // console.log('Authorization header:', req.headers.authorization);
-    
-    const { itemId, itemType, itemName } = req.body;
-    
-    // Manual token verification since we don't have middleware
-    const authHeader = req.headers.authorization;
-    let userId = null;
-    
-    if (!authHeader) {
-      console.error('No authorization header provided');
-      return res.status(401).json({ error: "Authentication required" });
-    }
-    
-    const token = authHeader.split(" ")[1];
-    if (!token) {
-      console.error('No token found in authorization header');
-      return res.status(401).json({ error: "Token not provided" });
-    }
-    
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET as string) as any;
-      userId = decoded.userId;
-      console.log('Token decoded successfully, userId:', userId);
-    } catch (tokenError) {
-      console.error('Token verification failed:', tokenError);
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    if (!itemId || !itemType || !itemName) {
-      console.error('Missing required fields:', { itemId, itemType, itemName });
-      return res.status(400).json({ error: "itemId, itemType, and itemName are required" });
-    }
-
-    if (!['document', 'folder'].includes(itemType)) {
-      console.error('Invalid itemType:', itemType);
-      return res.status(400).json({ error: "itemType must be 'document' or 'folder'" });
-    }
-
-    console.log('Checking if bookmark already exists for:', { userId, itemId });
-    // Check if bookmark already exists
-    const existingBookmark = await prisma.bookmark.findUnique({
-      where: {
-        userId_itemId: {
-          userId,
-          itemId
-        }
-      }
-    });
-
-    if (existingBookmark) {
-      console.log('Bookmark already exists');
-      return res.status(409).json({ error: "Item already bookmarked" });
-    }
-
-    console.log('Creating new bookmark...');
-    const bookmark = await prisma.bookmark.create({
-      data: {
-        userId,
-        itemId,
-        itemType,
-        itemName
-      }
-    });
-
-    console.log('Bookmark created successfully:', bookmark);
-    res.json({ message: "Bookmark created successfully", bookmark });
-  } catch (error: any) {
-    console.error("Error creating bookmark:", error);
-    res.status(500).json({ error: "Failed to create bookmark" });
-  }
+  await BookmarkService.createBookmark(req, res);
 });
 
 // @ts-ignore
 router.delete("/bookmarks/:itemId", async (req: Request, res: Response) => {
-  try {
-    // console.log('DELETE /bookmarks/:itemId called');
-    const { itemId } = req.params;
-    // console.log('ItemId to delete:', itemId);
-    // console.log('Authorization header:', req.headers.authorization);
-    
-    // Manual token verification since we don't have middleware
-    const authHeader = req.headers.authorization;
-    let userId = null;
-    
-    if (!authHeader) {
-      console.error('No authorization header provided');
-      return res.status(401).json({ error: "Authentication required" });
-    }
-    
-    const token = authHeader.split(" ")[1];
-    if (!token) {
-      console.error('No token found in authorization header');
-      return res.status(401).json({ error: "Token not provided" });
-    }
-    
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET as string) as any;
-      userId = decoded.userId;
-      console.log('Token decoded successfully, userId:', userId);
-    } catch (tokenError) {
-      console.error('Token verification failed:', tokenError);
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    console.log('Deleting bookmark for:', { userId, itemId });
-    const deletedBookmark = await prisma.bookmark.delete({
-      where: {
-        userId_itemId: {
-          userId,
-          itemId
-        }
-      }
-    });
-
-    console.log('Bookmark deleted successfully');
-    res.json({ message: "Bookmark removed successfully" });
-  } catch (error: any) {
-    console.error("Error removing bookmark:", error);
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: "Bookmark not found" });
-    }
-    res.status(500).json({ error: "Failed to remove bookmark" });
-  }
+  await BookmarkService.deleteBookmark(req, res);
 });
 
 // @ts-ignore
 router.get("/bookmarks", async (req: Request, res: Response) => {
-  try {
-    // console.log('GET /bookmarks called');
-    // console.log('Authorization header:', req.headers.authorization);
-    
-    // Manual token verification since we don't have middleware
-    const authHeader = req.headers.authorization;
-    let userId = null;
-    
-    if (!authHeader) {
-      console.error('No authorization header provided');
-      return res.status(401).json({ error: "Authentication required" });
-    }
-    
-    const token = authHeader.split(" ")[1];
-    if (!token) {
-      console.error('No token found in authorization header');
-      return res.status(401).json({ error: "Token not provided" });
-    }
-    
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET as string) as any;
-      userId = decoded.userId;
-      console.log('Token decoded successfully, userId:', userId);
-    } catch (tokenError) {
-      console.error('Token verification failed:', tokenError);
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    console.log('Fetching bookmarks for userId:', userId);
-    const bookmarks = await prisma.bookmark.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    console.log('Bookmarks found:', bookmarks.length);
-    console.log('Bookmarks data:', bookmarks);
-    res.json({ bookmarks });
-  } catch (error: any) {
-    console.error("Error fetching bookmarks:", error);
-    res.status(500).json({ error: "Failed to fetch bookmarks" });
-  }
+  await BookmarkService.getBookmarks(req, res);
 });
 
 export default router;

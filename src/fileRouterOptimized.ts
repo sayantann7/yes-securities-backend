@@ -12,24 +12,26 @@ import jwt from "jsonwebtoken";
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// Cache for bookmark queries
-const bookmarkCache = new Map<string, any[]>();
+// Enhanced cache for bookmark queries with better performance
+interface CacheItem<T> {
+    data: T;
+    timestamp: number;
+}
+
+const bookmarkCache = new Map<string, CacheItem<any[]>>();
 const BOOKMARK_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-const bookmarkCacheTimestamps = new Map<string, number>();
 
 async function getCachedBookmarks(userId: string): Promise<any[]> {
     const now = Date.now();
     const cacheKey = userId;
     
     // Check cache first
-    if (bookmarkCache.has(cacheKey)) {
-        const timestamp = bookmarkCacheTimestamps.get(cacheKey) || 0;
-        if (now - timestamp < BOOKMARK_CACHE_TTL) {
-            return bookmarkCache.get(cacheKey) || [];
-        }
+    const cached = bookmarkCache.get(cacheKey);
+    if (cached && (now - cached.timestamp) < BOOKMARK_CACHE_TTL) {
+        return cached.data;
     }
     
-    // Fetch from database
+    // Fetch from database with error handling
     try {
         const userBookmarks = await prisma.bookmark.findMany({
             where: { userId },
@@ -42,12 +44,21 @@ async function getCachedBookmarks(userId: string): Promise<any[]> {
         });
         
         // Cache the result
-        bookmarkCache.set(cacheKey, userBookmarks);
-        bookmarkCacheTimestamps.set(cacheKey, now);
+        bookmarkCache.set(cacheKey, {
+            data: userBookmarks,
+            timestamp: now
+        });
         
         return userBookmarks;
     } catch (error) {
         console.error('Error fetching bookmarks:', error);
+        
+        // Return cached data even if expired, or empty array
+        if (cached) {
+            console.log('Returning expired cached data due to database error');
+            return cached.data;
+        }
+        
         return [];
     }
 }
@@ -204,7 +215,6 @@ router.post('/folders/create', async (req: Request, res: Response) => {
     
     // Clear relevant caches
     bookmarkCache.clear();
-    bookmarkCacheTimestamps.clear();
     
     return res.status(201).json({ message: 'Folder created', key: folderKey });
   } catch (err) {
@@ -216,13 +226,18 @@ router.post('/folders/create', async (req: Request, res: Response) => {
 // Clear caches periodically
 setInterval(() => {
     const now = Date.now();
+    let cleared = 0;
     
     // Clear bookmark cache
-    for (const [key, timestamp] of bookmarkCacheTimestamps.entries()) {
-        if (now - timestamp > BOOKMARK_CACHE_TTL) {
+    for (const [key, item] of bookmarkCache.entries()) {
+        if (now - item.timestamp > BOOKMARK_CACHE_TTL) {
             bookmarkCache.delete(key);
-            bookmarkCacheTimestamps.delete(key);
+            cleared++;
         }
+    }
+    
+    if (cleared > 0) {
+        console.log(`🧹 Cleaned up ${cleared} expired bookmark cache entries`);
     }
 }, 60000); // Clean up every minute
 
