@@ -1258,9 +1258,9 @@ router.delete("/admin/comment/:commentId", async (req, res) => {
 // @ts-ignore
 router.post("/bookmarks", async (req: Request, res: Response) => {
   try {
-    console.log('POST /bookmarks called');
-    console.log('Request body:', req.body);
-    console.log('Authorization header:', req.headers.authorization);
+    // console.log('POST /bookmarks called');
+    // console.log('Request body:', req.body);
+    // console.log('Authorization header:', req.headers.authorization);
     
     const { itemId, itemType, itemName } = req.body;
     
@@ -1335,10 +1335,10 @@ router.post("/bookmarks", async (req: Request, res: Response) => {
 // @ts-ignore
 router.delete("/bookmarks/:itemId", async (req: Request, res: Response) => {
   try {
-    console.log('DELETE /bookmarks/:itemId called');
+    // console.log('DELETE /bookmarks/:itemId called');
     const { itemId } = req.params;
-    console.log('ItemId to delete:', itemId);
-    console.log('Authorization header:', req.headers.authorization);
+    // console.log('ItemId to delete:', itemId);
+    // console.log('Authorization header:', req.headers.authorization);
     
     // Manual token verification since we don't have middleware
     const authHeader = req.headers.authorization;
@@ -1388,8 +1388,8 @@ router.delete("/bookmarks/:itemId", async (req: Request, res: Response) => {
 // @ts-ignore
 router.get("/bookmarks", async (req: Request, res: Response) => {
   try {
-    console.log('GET /bookmarks called');
-    console.log('Authorization header:', req.headers.authorization);
+    // console.log('GET /bookmarks called');
+    // console.log('Authorization header:', req.headers.authorization);
     
     // Manual token verification since we don't have middleware
     const authHeader = req.headers.authorization;
