@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, ListObjectsV2Command, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, CopyObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 require('dotenv').config();
@@ -18,21 +18,19 @@ const bucket = process.env.S3_BUCKET_NAME;
 // Cache for icon URLs to avoid repeated S3 calls
 const iconCache = new Map<string, string | null>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const ICON_CACHE_MAX_ENTRIES = 5000; // safety cap
 const cacheTimestamps = new Map<string, number>();
+const ICON_CACHE_MAX_ENTRIES = 5000;
 
 function enforceIconCacheLimit() {
-  if (iconCache.size <= ICON_CACHE_MAX_ENTRIES) return;
-  const entries: Array<{ key: string; ts: number }> = [];
-  for (const [key, ts] of cacheTimestamps.entries()) {
-    entries.push({ key, ts });
-  }
-  entries.sort((a, b) => a.ts - b.ts); // oldest first
-  const toEvict = iconCache.size - ICON_CACHE_MAX_ENTRIES;
-  for (let i = 0; i < toEvict; i++) {
-    iconCache.delete(entries[i].key);
-    cacheTimestamps.delete(entries[i].key);
-  }
+    if (iconCache.size <= ICON_CACHE_MAX_ENTRIES) return;
+    const entries: Array<{ key: string; ts: number }> = [];
+    for (const [key, ts] of cacheTimestamps.entries()) entries.push({ key, ts });
+    entries.sort((a, b) => a.ts - b.ts);
+    const toEvict = iconCache.size - ICON_CACHE_MAX_ENTRIES;
+    for (let i = 0; i < toEvict; i++) {
+        iconCache.delete(entries[i].key);
+        cacheTimestamps.delete(entries[i].key);
+    }
 }
 
 export interface GetSignedUrlParams {
@@ -40,12 +38,33 @@ export interface GetSignedUrlParams {
 }
 
 /**
+ * Build S3 key for a stored icon corresponding to an item path (file or folder)
+ */
+export function buildIconKey(itemPath: string, iconType: string = 'png'): string {
+    const safe = String(itemPath || '')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '')
+        .replace(/[^a-zA-Z0-9._-]/g, '_');
+    const ext = iconType.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    return `icons/${safe}_icon.${ext}`;
+}
+
+/**
+ * Get a signed PUT URL to upload an icon for a given item path
+ */
+export async function getIconUploadUrl(itemPath: string, iconType: string = 'png'): Promise<string> {
+    const key = buildIconKey(itemPath, iconType);
+    const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: `image/${iconType === 'jpg' ? 'jpeg' : iconType}` });
+    return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+}
+
+/**
  * Optimized icon URL retrieval with caching and concurrent processing
  */
 export async function getCustomIconUrlOptimized(itemPath: string): Promise<string | null> {
-    const cacheKey = itemPath;
+    const cacheKey = canonicalKey(itemPath);
     const now = Date.now();
-    
+
     // Check cache first
     if (iconCache.has(cacheKey)) {
         const timestamp = cacheTimestamps.get(cacheKey) || 0;
@@ -53,45 +72,37 @@ export async function getCustomIconUrlOptimized(itemPath: string): Promise<strin
             return iconCache.get(cacheKey) || null;
         }
     }
-    
+
     try {
-        const iconKey = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
-        const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
-        
-        // Try all extensions concurrently instead of sequentially
-        const iconChecks = extensions.map(async (ext) => {
+        const exts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+        const keyCandidates = exts.map((ext) => buildIconKey(cacheKey, ext));
+
+        // Probe concurrently for first existing icon
+        const checks = keyCandidates.map(async (k) => {
             try {
-                const fullIconKey = `${iconKey}.${ext}`;
-                const command = new GetObjectCommand({ Bucket: bucket, Key: fullIconKey });
-                await s3Client.send(command);
-                return fullIconKey;
+                await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+                return k;
             } catch {
                 return null;
             }
         });
-        
-        const results = await Promise.allSettled(iconChecks);
-        const foundIcon = results.find(result => 
-            result.status === 'fulfilled' && result.value
-        );
-        
-        if (foundIcon && foundIcon.status === 'fulfilled' && foundIcon.value) {
-            const iconUrl = await getSignedDownloadUrl(foundIcon.value);
-            // Cache the result
+        const results = await Promise.allSettled(checks);
+        const found = results.find(r => r.status === 'fulfilled' && r.value);
+
+        if (found && found.status === 'fulfilled' && found.value) {
+            const iconUrl = await getSignedDownloadUrl(found.value);
             iconCache.set(cacheKey, iconUrl);
             cacheTimestamps.set(cacheKey, now);
             enforceIconCacheLimit();
             return iconUrl;
-        } else {
-            // Cache negative result
-            iconCache.set(cacheKey, null);
-            cacheTimestamps.set(cacheKey, now);
-            enforceIconCacheLimit();
-            return null;
         }
+
+        iconCache.set(cacheKey, null);
+        cacheTimestamps.set(cacheKey, now);
+        enforceIconCacheLimit();
+        return null;
     } catch (err) {
         console.error('Error getting custom icon URL:', err);
-        // Cache negative result on error
         iconCache.set(cacheKey, null);
         cacheTimestamps.set(cacheKey, now);
         enforceIconCacheLimit();
@@ -124,119 +135,131 @@ async function batchProcessIcons(items: string[], concurrencyLimit: number = 10)
     return results;
 }
 
-/**
- * Optimized list children with concurrent icon loading and limits
- */
-export async function listChildrenWithIconsOptimized(prefix: string = '', maxItems: number = 1000) {
-    const normalizedPrefix = typeof prefix === 'string' ? prefix : '';
-    
-    try {
-        // Add MaxKeys to limit S3 response size
-        const data = new ListObjectsV2Command({
-            Bucket: bucket,
-            Prefix: normalizedPrefix,
-            Delimiter: "/",
-            MaxKeys: maxItems,
+function canonicalKey(input: string): string {
+    // remove leading and trailing slashes
+    return String(input || '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function makePrefixes(prefix: string = ''): string[] {
+    const raw = typeof prefix === 'string' ? prefix : '';
+    const noSlash = canonicalKey(raw);
+    const withSlash = noSlash ? `/${noSlash}` : '/';
+    const set = new Set<string>();
+    set.add(noSlash);      // e.g., "folder/sub/" -> "folder/sub"
+    set.add(withSlash);    // e.g., "/folder/sub"
+    return Array.from(set);
+}
+
+async function listOnce(prefix: string, maxItems: number) {
+    const normalized = prefix ? (prefix.endsWith('/') ? prefix : `${prefix}/`) : '';
+    const cmd = new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: normalized,
+        Delimiter: "/",
+        MaxKeys: maxItems,
+    });
+    const response = await s3Client.send(cmd);
+    const folders: Array<{key: string}> = [];
+    const files: Array<{key: string}> = [];
+
+    if (response.CommonPrefixes) {
+        response.CommonPrefixes.forEach(prefixObj => {
+            const folderKey = prefixObj.Prefix || "";
+            folders.push({ key: folderKey });
         });
-
-        const response = await s3Client.send(data);
-
-        // Collect all items first
-        const allFolders: Array<{key: string}> = [];
-        const allFiles: Array<{key: string}> = [];
-        
-        if (response.CommonPrefixes) {
-            response.CommonPrefixes.forEach(prefixObj => {
-                const folderKey = prefixObj.Prefix || "";
-                allFolders.push({ key: folderKey });
-            });
-        }
-
-        if (response.Contents) {
-            response.Contents.forEach(content => {
-                const fileKey = content.Key || "";
-                if (!fileKey.endsWith('/') && !fileKey.startsWith('icons/')) {
-                    allFiles.push({ key: fileKey });
-                }
-            });
-        }
-
-        // Get all item keys for batch icon processing
-        const allItemKeys = [
-            ...allFolders.map(f => f.key),
-            ...allFiles.map(f => f.key)
-        ];
-
-        // Batch process icons with concurrency limit
-        const iconResults = await batchProcessIcons(allItemKeys, 5); // Limit to 5 concurrent requests
-
-        // Combine results
-        const foldersWithIcons = allFolders.map(folder => ({
-            key: folder.key,
-            iconUrl: iconResults.get(folder.key) || undefined
-        }));
-
-        const filesWithIcons = allFiles.map(file => ({
-            key: file.key,
-            iconUrl: iconResults.get(file.key) || undefined
-        }));
-
-        return { 
-            folders: foldersWithIcons, 
-            files: filesWithIcons,
-            isTruncated: response.IsTruncated || false,
-            continuationToken: response.NextContinuationToken
-        };
-        
-    } catch (error) {
-        console.error('Error in listChildrenWithIconsOptimized:', error);
-        throw error;
     }
+
+    if (response.Contents) {
+        response.Contents.forEach(content => {
+            const fileKey = content.Key || "";
+            if (!fileKey.endsWith('/')) {
+                files.push({ key: fileKey });
+            }
+        });
+    }
+    return { folders, files, isTruncated: !!response.IsTruncated, continuationToken: response.NextContinuationToken };
 }
 
 /**
- * Simple list without icons for faster loading
+ * Optimized list children with concurrent icon loading and limits; merges both '' and '/' roots.
+ */
+export async function listChildrenWithIconsOptimized(prefix: string = '', maxItems: number = 1000) {
+    const variants = makePrefixes(prefix);
+    const foldersMap = new Map<string, { key: string }>();
+    const filesMap = new Map<string, { key: string }>();
+
+    for (const v of variants) {
+        const { folders, files } = await listOnce(v, maxItems);
+        for (const f of folders) {
+            const norm = canonicalKey(f.key);
+            if (norm === 'icons' || norm.startsWith('icons/')) continue; // hide icons folder tree
+            foldersMap.set(norm + '/', { key: norm + '/' });
+        }
+        for (const f of files) {
+            const norm = canonicalKey(f.key);
+            if (norm.startsWith('icons/')) continue; // hide icon objects
+            filesMap.set(norm, { key: norm });
+        }
+    }
+
+    // Batch icon URLs for all items (folders and files) using canonical keys
+    const allKeys = [
+        ...Array.from(foldersMap.values()).map(f => f.key),
+        ...Array.from(filesMap.values()).map(f => f.key),
+    ];
+
+    const iconResults = await (async () => {
+        const out = new Map<string, string | null>();
+        const concurrency = 5;
+        for (let i = 0; i < allKeys.length; i += concurrency) {
+            const batch = allKeys.slice(i, i + concurrency);
+            const promises = batch.map(async (k) => ({ k, url: await getCustomIconUrlOptimized(k) }));
+            const res = await Promise.allSettled(promises);
+            for (const r of res) {
+                if (r.status === 'fulfilled') out.set(r.value.k, r.value.url);
+            }
+        }
+        return out;
+    })();
+
+    const folders = Array.from(foldersMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
+    const files = Array.from(filesMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
+
+    return { folders, files, isTruncated: false, continuationToken: undefined };
+}
+
+/**
+ * Simple list without icons; merges both '' and '/' roots and dedupes.
  */
 export async function listChildrenFast(prefix: string = '', maxItems: number = 1000) {
     try {
-      const normalizedPrefix = typeof prefix === 'string' ? prefix : '';
-      
-      const data = new ListObjectsV2Command({
-          Bucket: bucket,
-          Prefix: normalizedPrefix,
-          Delimiter: "/",
-          MaxKeys: maxItems,
-      });
-  
-      const response = await s3Client.send(data);
-  
-      const folders: Array<{key: string}> = [];
-      if (response.CommonPrefixes) {
-          response.CommonPrefixes.forEach(prefixObj => {
-              const folderKey = prefixObj.Prefix || "";
-              folders.push({ key: folderKey });
-          });
-      }
-  
-      const files: Array<{key: string}> = [];
-      if (response.Contents) {
-          response.Contents.forEach(content => {
-              const fileKey = content.Key || "";
-              if (!fileKey.endsWith('/') && !fileKey.startsWith('icons/')) {
-                  files.push({ key: fileKey });
-              }
-          });
-      }
-  
-      return { 
-          folders, 
-          files,
-          isTruncated: response.IsTruncated || false,
-          continuationToken: response.NextContinuationToken
-      };
+        const variants = makePrefixes(prefix);
+        const foldersMap = new Map<string, { key: string }>();
+        const filesMap = new Map<string, { key: string }>();
+
+        for (const v of variants) {
+            const { folders, files } = await listOnce(v, maxItems);
+            for (const f of folders) {
+                const norm = canonicalKey(f.key);
+                if (norm === 'icons' || norm.startsWith('icons/')) continue; // hide icons folder tree
+                foldersMap.set(norm + '/', { key: norm + '/' });
+            }
+            for (const f of files) {
+                const norm = canonicalKey(f.key);
+                if (norm.startsWith('icons/')) continue; // hide icon objects
+                filesMap.set(norm, { key: norm });
+            }
+        }
+
+        return {
+            folders: Array.from(foldersMap.values()),
+            files: Array.from(filesMap.values()),
+            isTruncated: false,
+            continuationToken: undefined
+        };
     } catch (err) {
-      console.error('Error in listChildrenFast:', err);
-      throw err;
+        console.error('Error in listChildrenFast:', err);
+        throw err;
     }
 }
 
@@ -249,6 +272,36 @@ export async function getSignedDownloadUrl(path: string): Promise<string> {
 export async function getSignedUploadUrl(path: string): Promise<string> {
     let command = new PutObjectCommand({ Bucket: bucket, Key: path });
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+}
+
+/**
+ * Recursively delete a folder (all objects under a prefix)
+ */
+export async function deleteFolderRecursively(prefix: string): Promise<void> {
+    const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+    let continuationToken: string | undefined = undefined;
+
+    do {
+        const listCmd = new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: normalizedPrefix,
+            ContinuationToken: continuationToken,
+        } as any);
+        const response: any = await s3Client.send(listCmd);
+        const objects = (response.Contents || []).map((o: any) => ({ Key: o.Key }));
+        if (objects.length > 0) {
+            // Delete in batches
+            const batches: any[] = [];
+            for (let i = 0; i < objects.length; i += 1000) {
+                batches.push(objects.slice(i, i + 1000));
+            }
+            for (const batch of batches) {
+                // Using individual deletes to avoid adding a new import; cheap under small sizes
+                await Promise.all(batch.map((obj: any) => s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }))));
+            }
+        }
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
 }
 
 export async function createFolder(prefix: string, name: string): Promise<void> {
@@ -273,20 +326,73 @@ export async function createFolder(prefix: string, name: string): Promise<void> 
     }
 }
 
-// Clear cache periodically - ensure single interval across reloads
-declare global {
-  // eslint-disable-next-line no-var
-  var __iconCacheCleanupInterval: ReturnType<typeof setInterval> | undefined;
+// Delete a single file/object
+export async function deleteFile(key: string): Promise<void> {
+    try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } catch (err) {
+        console.error('Error deleting file:', err);
+        throw err;
+    }
 }
 
-if (!globalThis.__iconCacheCleanupInterval) {
-  globalThis.__iconCacheCleanupInterval = setInterval(() => {
-      const now = Date.now();
-      for (const [key, timestamp] of cacheTimestamps.entries()) {
-          if (now - timestamp > CACHE_TTL) {
-              iconCache.delete(key);
-              cacheTimestamps.delete(key);
-          }
-      }
-  }, 60000); // Clean up every minute
+// Clear cache periodically (singleton)
+declare global {
+    // eslint-disable-next-line no-var
+    var __iconCacheCleanupInterval__: ReturnType<typeof setInterval> | undefined;
+}
+
+if (!globalThis.__iconCacheCleanupInterval__) {
+    globalThis.__iconCacheCleanupInterval__ = setInterval(() => {
+        const now = Date.now();
+        for (const [key, timestamp] of cacheTimestamps.entries()) {
+            if (now - timestamp > CACHE_TTL) {
+                iconCache.delete(key);
+                cacheTimestamps.delete(key);
+            }
+        }
+    }, 60000); // Clean up every minute
+}
+
+/**
+ * Rename a folder by copying all objects from oldPrefix to newPrefix and deleting originals
+ */
+export async function renameFolderExact(oldPrefix: string, newPrefix: string): Promise<{ moved: number; deleted: number }> {
+    const src = String(oldPrefix);
+    const dst = String(newPrefix);
+
+    let continuationToken: string | undefined = undefined;
+    let moved = 0;
+    let deleted = 0;
+
+    do {
+        const listCmd = new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: src,
+            ContinuationToken: continuationToken,
+        } as any);
+        const response: any = await s3Client.send(listCmd);
+        const contents: Array<{ Key: string }> = (response.Contents || []).filter((o: any) => !!o.Key);
+
+        for (const obj of contents) {
+            const relative = obj.Key.slice(src.length);
+            const targetKey = `${dst}${relative}`;
+            try {
+                await s3Client.send(new CopyObjectCommand({
+                    Bucket: bucket,
+                    CopySource: `${bucket}/${obj.Key}`,
+                    Key: targetKey,
+                }));
+                moved++;
+                await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
+                deleted++;
+            } catch (e) {
+                console.error('Error moving object during rename:', obj.Key, '->', targetKey, e);
+            }
+        }
+
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    return { moved, deleted };
 }

@@ -1012,8 +1012,10 @@ router.get("/admin/users-metrics", async (req, res) => {
 
     // Calculate overall metrics
     const totalUsers = allUsers.length;
-    const activeUsers = usersWithMetrics.filter(u => u.daysInactive <= 7).length;
-    const inactiveUsers = totalUsers - activeUsers;
+    // Active users: must have logged in at least once AND within the last 7 days
+    const activeUsers = usersWithMetrics.filter(u => (u.numberOfSignIns ?? 0) > 0 && u.daysInactive <= 7).length;
+    const neverLoggedInUsers = allUsers.filter(u => (u.numberOfSignIns ?? 0) === 0 || u.lastSignIn === null).length;
+    const inactiveUsers = totalUsers - activeUsers; // includes never logged in users
     const totalTimeSpent = allUsers.reduce((sum, user) => sum + user.timeSpent, 0);
     const totalDocumentViews = allUsers.reduce((sum, user) => sum + user.documentsViewed, 0);
     const totalSignIns = allUsers.reduce((sum, user) => sum + user.numberOfSignIns, 0);
@@ -1033,6 +1035,7 @@ router.get("/admin/users-metrics", async (req, res) => {
       totalUsers,
       activeUsers,
       inactiveUsers,
+      neverLoggedInUsers,
       averageTimeSpent: totalUsers > 0 ? Math.round(totalTimeSpent / totalUsers) : 0,
       totalDocumentViews,
       averageSignIns: totalUsers > 0 ? Math.round(totalSignIns / totalUsers) : 0,
