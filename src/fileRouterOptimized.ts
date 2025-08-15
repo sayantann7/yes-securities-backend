@@ -20,6 +20,20 @@ interface CacheItem<T> {
 
 const bookmarkCache = new Map<string, CacheItem<any[]>>();
 const BOOKMARK_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+const BOOKMARK_CACHE_MAX_ENTRIES = 5000;
+
+function enforceLocalBookmarkCacheLimit() {
+  if (bookmarkCache.size <= BOOKMARK_CACHE_MAX_ENTRIES) return;
+  const entries: Array<{ key: string; ts: number }> = [];
+  for (const [key, item] of bookmarkCache.entries()) {
+    entries.push({ key, ts: item.timestamp });
+  }
+  entries.sort((a, b) => a.ts - b.ts);
+  const toEvict = bookmarkCache.size - BOOKMARK_CACHE_MAX_ENTRIES;
+  for (let i = 0; i < toEvict; i++) {
+    bookmarkCache.delete(entries[i].key);
+  }
+}
 
 async function getCachedBookmarks(userId: string): Promise<any[]> {
     const now = Date.now();
@@ -48,6 +62,7 @@ async function getCachedBookmarks(userId: string): Promise<any[]> {
             data: userBookmarks,
             timestamp: now
         });
+        enforceLocalBookmarkCacheLimit();
         
         return userBookmarks;
     } catch (error) {
@@ -223,22 +238,29 @@ router.post('/folders/create', async (req: Request, res: Response) => {
   }
 });
 
-// Clear caches periodically
-setInterval(() => {
-    const now = Date.now();
-    let cleared = 0;
-    
-    // Clear bookmark cache
-    for (const [key, item] of bookmarkCache.entries()) {
-        if (now - item.timestamp > BOOKMARK_CACHE_TTL) {
-            bookmarkCache.delete(key);
-            cleared++;
-        }
-    }
-    
-    if (cleared > 0) {
-        console.log(`🧹 Cleaned up ${cleared} expired bookmark cache entries`);
-    }
-}, 60000); // Clean up every minute
+// Clear caches periodically - singleton interval
+declare global {
+  // eslint-disable-next-line no-var
+  var __fileRouterBookmarkCacheCleanupInterval: ReturnType<typeof setInterval> | undefined;
+}
+
+if (!globalThis.__fileRouterBookmarkCacheCleanupInterval) {
+  globalThis.__fileRouterBookmarkCacheCleanupInterval = setInterval(() => {
+      const now = Date.now();
+      let cleared = 0;
+      
+      // Clear bookmark cache
+      for (const [key, item] of bookmarkCache.entries()) {
+          if (now - item.timestamp > BOOKMARK_CACHE_TTL) {
+              bookmarkCache.delete(key);
+              cleared++;
+          }
+      }
+      
+      if (cleared > 0) {
+          console.log(`🧹 Cleaned up ${cleared} expired bookmark cache entries`);
+      }
+  }, 60000); // Clean up every minute
+}
 
 export default router;

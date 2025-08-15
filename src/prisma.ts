@@ -19,17 +19,29 @@ if (process.env.NODE_ENV !== 'production') {
   globalThis.__prisma = prisma;
 }
 
-// Graceful shutdown
+// Graceful shutdown - only disconnect here; do not exit the process from this module
 process.on('beforeExit', async () => {
-  await prisma.$disconnect();
+  try {
+    await prisma.$disconnect();
+  } catch (e) {
+    console.error('Error disconnecting Prisma on beforeExit:', e);
+  }
 });
 
 process.on('SIGINT', async () => {
-  await prisma.$disconnect();
-  process.exit(0);
+  try {
+    await prisma.$disconnect();
+  } catch (e) {
+    console.error('Error disconnecting Prisma on SIGINT:', e);
+  }
+  // Let the main server file decide when to exit
 });
 
 process.on('SIGTERM', async () => {
-  await prisma.$disconnect();
-  process.exit(0);
+  try {
+    await prisma.$disconnect();
+  } catch (e) {
+    console.error('Error disconnecting Prisma on SIGTERM:', e);
+  }
+  // Let the main server file decide when to exit
 });

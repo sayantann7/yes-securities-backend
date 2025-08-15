@@ -18,7 +18,22 @@ const bucket = process.env.S3_BUCKET_NAME;
 // Cache for icon URLs to avoid repeated S3 calls
 const iconCache = new Map<string, string | null>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const ICON_CACHE_MAX_ENTRIES = 5000; // safety cap
 const cacheTimestamps = new Map<string, number>();
+
+function enforceIconCacheLimit() {
+  if (iconCache.size <= ICON_CACHE_MAX_ENTRIES) return;
+  const entries: Array<{ key: string; ts: number }> = [];
+  for (const [key, ts] of cacheTimestamps.entries()) {
+    entries.push({ key, ts });
+  }
+  entries.sort((a, b) => a.ts - b.ts); // oldest first
+  const toEvict = iconCache.size - ICON_CACHE_MAX_ENTRIES;
+  for (let i = 0; i < toEvict; i++) {
+    iconCache.delete(entries[i].key);
+    cacheTimestamps.delete(entries[i].key);
+  }
+}
 
 export interface GetSignedUrlParams {
     path: string;
@@ -65,11 +80,13 @@ export async function getCustomIconUrlOptimized(itemPath: string): Promise<strin
             // Cache the result
             iconCache.set(cacheKey, iconUrl);
             cacheTimestamps.set(cacheKey, now);
+            enforceIconCacheLimit();
             return iconUrl;
         } else {
             // Cache negative result
             iconCache.set(cacheKey, null);
             cacheTimestamps.set(cacheKey, now);
+            enforceIconCacheLimit();
             return null;
         }
     } catch (err) {
@@ -77,6 +94,7 @@ export async function getCustomIconUrlOptimized(itemPath: string): Promise<strin
         // Cache negative result on error
         iconCache.set(cacheKey, null);
         cacheTimestamps.set(cacheKey, now);
+        enforceIconCacheLimit();
         return null;
     }
 }
@@ -180,41 +198,46 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
  * Simple list without icons for faster loading
  */
 export async function listChildrenFast(prefix: string = '', maxItems: number = 1000) {
-    const normalizedPrefix = typeof prefix === 'string' ? prefix : '';
-    
-    const data = new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: normalizedPrefix,
-        Delimiter: "/",
-        MaxKeys: maxItems,
-    });
-
-    const response = await s3Client.send(data);
-
-    const folders: Array<{key: string}> = [];
-    if (response.CommonPrefixes) {
-        response.CommonPrefixes.forEach(prefixObj => {
-            const folderKey = prefixObj.Prefix || "";
-            folders.push({ key: folderKey });
-        });
+    try {
+      const normalizedPrefix = typeof prefix === 'string' ? prefix : '';
+      
+      const data = new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: normalizedPrefix,
+          Delimiter: "/",
+          MaxKeys: maxItems,
+      });
+  
+      const response = await s3Client.send(data);
+  
+      const folders: Array<{key: string}> = [];
+      if (response.CommonPrefixes) {
+          response.CommonPrefixes.forEach(prefixObj => {
+              const folderKey = prefixObj.Prefix || "";
+              folders.push({ key: folderKey });
+          });
+      }
+  
+      const files: Array<{key: string}> = [];
+      if (response.Contents) {
+          response.Contents.forEach(content => {
+              const fileKey = content.Key || "";
+              if (!fileKey.endsWith('/') && !fileKey.startsWith('icons/')) {
+                  files.push({ key: fileKey });
+              }
+          });
+      }
+  
+      return { 
+          folders, 
+          files,
+          isTruncated: response.IsTruncated || false,
+          continuationToken: response.NextContinuationToken
+      };
+    } catch (err) {
+      console.error('Error in listChildrenFast:', err);
+      throw err;
     }
-
-    const files: Array<{key: string}> = [];
-    if (response.Contents) {
-        response.Contents.forEach(content => {
-            const fileKey = content.Key || "";
-            if (!fileKey.endsWith('/') && !fileKey.startsWith('icons/')) {
-                files.push({ key: fileKey });
-            }
-        });
-    }
-
-    return { 
-        folders, 
-        files,
-        isTruncated: response.IsTruncated || false,
-        continuationToken: response.NextContinuationToken
-    };
 }
 
 // Re-export existing functions
@@ -250,13 +273,20 @@ export async function createFolder(prefix: string, name: string): Promise<void> 
     }
 }
 
-// Clear cache periodically
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, timestamp] of cacheTimestamps.entries()) {
-        if (now - timestamp > CACHE_TTL) {
-            iconCache.delete(key);
-            cacheTimestamps.delete(key);
-        }
-    }
-}, 60000); // Clean up every minute
+// Clear cache periodically - ensure single interval across reloads
+declare global {
+  // eslint-disable-next-line no-var
+  var __iconCacheCleanupInterval: ReturnType<typeof setInterval> | undefined;
+}
+
+if (!globalThis.__iconCacheCleanupInterval) {
+  globalThis.__iconCacheCleanupInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [key, timestamp] of cacheTimestamps.entries()) {
+          if (now - timestamp > CACHE_TTL) {
+              iconCache.delete(key);
+              cacheTimestamps.delete(key);
+          }
+      }
+  }, 60000); // Clean up every minute
+}

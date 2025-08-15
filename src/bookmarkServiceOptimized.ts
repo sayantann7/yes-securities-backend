@@ -12,6 +12,7 @@ interface BookmarkCacheItem {
 
 const bookmarkCache = new Map<string, BookmarkCacheItem>();
 const BOOKMARK_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const BOOKMARK_CACHE_MAX_ENTRIES = 5000; // safety cap to prevent unbounded growth
 
 // Metrics tracking for bookmark operations
 interface BookmarkMetrics {
@@ -27,6 +28,21 @@ const metrics: BookmarkMetrics = {
   cacheMisses: 0,
   errors: 0
 };
+
+function enforceBookmarkCacheLimit() {
+  // Evict oldest entries if cache grows too large
+  if (bookmarkCache.size <= BOOKMARK_CACHE_MAX_ENTRIES) return;
+  const entries: Array<{ key: string; ts: number }> = [];
+  for (const [key, item] of bookmarkCache.entries()) {
+    entries.push({ key, ts: item.timestamp });
+  }
+  // Oldest first
+  entries.sort((a, b) => a.ts - b.ts);
+  const toEvict = bookmarkCache.size - BOOKMARK_CACHE_MAX_ENTRIES;
+  for (let i = 0; i < toEvict; i++) {
+    bookmarkCache.delete(entries[i].key);
+  }
+}
 
 export class BookmarkService {
   /**
@@ -100,6 +116,7 @@ export class BookmarkService {
         data: bookmarks,
         timestamp: now
       });
+      enforceBookmarkCacheLimit();
       
       return bookmarks;
       
@@ -606,19 +623,30 @@ export class BookmarkService {
   }
 }
 
-// Periodic cache cleanup
-setInterval(() => {
-  const now = Date.now();
-  let cleared = 0;
-  
-  for (const [key, item] of bookmarkCache.entries()) {
-    if (now - item.timestamp > BOOKMARK_CACHE_TTL) {
-      bookmarkCache.delete(key);
-      cleared++;
+// Periodic cache cleanup - ensure only one interval exists across hot reloads
+declare global {
+  // eslint-disable-next-line no-var
+  var __bookmarkCacheCleanupInterval: ReturnType<typeof setInterval> | undefined;
+}
+
+if (!globalThis.__bookmarkCacheCleanupInterval) {
+  globalThis.__bookmarkCacheCleanupInterval = setInterval(() => {
+    try {
+      const now = Date.now();
+      let cleared = 0;
+      
+      for (const [key, item] of bookmarkCache.entries()) {
+        if (now - item.timestamp > BOOKMARK_CACHE_TTL) {
+          bookmarkCache.delete(key);
+          cleared++;
+        }
+      }
+      
+      if (cleared > 0) {
+        console.log(`🧹 Cleaned up ${cleared} expired bookmark cache entries`);
+      }
+    } catch (e) {
+      console.error('Bookmark cache cleanup interval error:', e);
     }
-  }
-  
-  if (cleared > 0) {
-    console.log(`🧹 Cleaned up ${cleared} expired bookmark cache entries`);
-  }
-}, 60000); // Clean up every minute
+  }, 60000);
+}
