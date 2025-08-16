@@ -11,7 +11,8 @@ import {
   deleteFile,
   renameFolderExact,
   renameFileExact,
-  renameIconsForItem
+  renameIconsForItem,
+  searchInBucket
 } from "./awsOptimized";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
@@ -239,6 +240,30 @@ router.post(
     }
   }
 );
+
+// Unified search across files and folders with filters
+router.post('/search', async (req: Request, res: Response) => {
+  try {
+    const { q, type = 'all', limit = 100, fileTypes = [], dateRange } = req.body || {};
+    if (!q || typeof q !== 'string' || q.trim() === '') {
+      res.status(400).json({ error: 'Query q is required' });
+      return;
+    }
+    const params = {
+      q: q.trim(),
+      type: type === 'files' || type === 'folders' ? type : 'all',
+      limit: Number(limit) || 100,
+      fileTypes: Array.isArray(fileTypes) ? fileTypes : [],
+      dateStart: dateRange?.start || undefined,
+      dateEnd: dateRange?.end || undefined,
+    };
+    const items = await searchInBucket(params);
+    res.json({ items });
+  } catch (err) {
+    console.error('Error in /search:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
 
 // Delete a single file (accepts either { filePath } or { key })
 router.delete('/files/delete', async (req: Request, res: Response) => {

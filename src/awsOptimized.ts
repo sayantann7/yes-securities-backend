@@ -50,6 +50,121 @@ export interface GetSignedUrlParams {
     path: string;
 }
 
+// -------------------- Search helpers --------------------
+export type SearchItemType = 'file' | 'folder';
+export interface SearchParams {
+    q: string;
+    type?: 'all' | 'files' | 'folders';
+    limit?: number;
+    fileTypes?: string[];
+    dateStart?: string; // ISO date
+    dateEnd?: string;   // ISO date
+}
+
+export interface SearchResultItem {
+    key: string;
+    type: SearchItemType;
+    lastModified?: string;
+}
+
+function extToKind(name: string): string {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    if (['pdf'].includes(ext)) return 'pdf';
+    if (['png','jpg','jpeg','gif','svg','webp'].includes(ext)) return 'image';
+    if (['mp4','mov','avi','mkv'].includes(ext)) return 'video';
+    if (['mp3','wav','aac','flac'].includes(ext)) return 'audio';
+    if (['xlsx','xls','csv'].includes(ext)) return 'spreadsheet';
+    if (['docx','doc','txt','rtf','md'].includes(ext)) return 'document';
+    if (['pptx','ppt','key'].includes(ext)) return 'presentation';
+    return 'file';
+}
+
+const searchCache = new Map<string, { data: SearchResultItem[]; ts: number }>();
+const SEARCH_CACHE_TTL = 30_000; // 30s
+
+export async function searchInBucket(params: SearchParams): Promise<SearchResultItem[]> {
+    const { q, type = 'all' } = params;
+    const limit = Math.min(Math.max(params.limit || 100, 1), 500);
+    const fileTypes = Array.isArray(params.fileTypes) ? params.fileTypes.map(s => String(s).toLowerCase()) : [];
+    const dateStart = params.dateStart ? Date.parse(params.dateStart) : undefined;
+    const dateEnd = params.dateEnd ? Date.parse(params.dateEnd) : undefined;
+    const needle = String(q || '').toLowerCase().trim();
+    if (!needle) return [];
+
+    // Cache key ignoring limit so we can slice
+    const cacheKey = JSON.stringify({ q: needle, type, fileTypes, dateStart, dateEnd });
+    const now = Date.now();
+    const cached = searchCache.get(cacheKey);
+    if (cached && (now - cached.ts) < SEARCH_CACHE_TTL) {
+        return cached.data.slice(0, limit);
+    }
+
+    // S3 scan with bounded work and early exit
+    const results: SearchResultItem[] = [];
+    const seen = new Set<string>();
+    const scannedCap = 5000; // max objects to scan per request
+    let scanned = 0;
+
+    const prefixesToScan = ['/', ''];
+    for (const pfx of prefixesToScan) {
+        let continuationToken: string | undefined = undefined;
+        do {
+            const cmd = new ListObjectsV2Command({
+                Bucket: bucket,
+                Prefix: pfx,
+                ContinuationToken: continuationToken,
+                MaxKeys: 1000,
+            } as any);
+            const response: any = await s3Client.send(cmd);
+            const contents: Array<{ Key: string; LastModified?: Date }> = (response.Contents || []).filter((o: any) => !!o.Key);
+
+            for (const obj of contents) {
+                const key = obj.Key || '';
+                // Skip icons tree
+                if (key.startsWith('icons/') || key.startsWith('/icons/')) continue;
+
+                const isFolder = key.endsWith('/');
+                const typeOk = (type === 'all') || (type === 'files' && !isFolder) || (type === 'folders' && isFolder);
+                if (!typeOk) continue;
+
+                // Match name by last segment
+                const lastSegment = canonicalKey(key).split('/').pop() || '';
+                if (!lastSegment.toLowerCase().includes(needle)) continue;
+
+                // Filters
+                if (!isFolder) {
+                    if (fileTypes.length > 0) {
+                        const kind = extToKind(lastSegment);
+                        if (!fileTypes.includes(kind)) continue;
+                    }
+                    if (dateStart || dateEnd) {
+                        const lm = obj.LastModified ? obj.LastModified.getTime() : undefined;
+                        if (lm !== undefined) {
+                            if (dateStart && lm < dateStart) continue;
+                            if (dateEnd && lm > dateEnd) continue;
+                        }
+                    }
+                }
+
+                const keyForSet = key;
+                if (!seen.has(keyForSet)) {
+                    seen.add(keyForSet);
+                    results.push({ key, type: isFolder ? 'folder' : 'file', lastModified: obj.LastModified?.toISOString() });
+                }
+                if (results.length >= limit) break;
+            }
+
+            scanned += contents.length;
+            if (results.length >= limit || scanned >= scannedCap) break;
+            continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+        } while (continuationToken);
+        if (results.length >= limit || scanned >= scannedCap) break;
+    }
+
+    searchCache.set(cacheKey, { data: results.slice(0, 500), ts: now });
+    return results.slice(0, limit);
+}
+
 /**
  * Build S3 key for a stored icon corresponding to an item path (file or folder)
  */
