@@ -345,6 +345,23 @@ export async function deleteFile(key: string): Promise<void> {
     }
 }
 
+// Rename a single file/object by copying to new key and deleting the original
+export async function renameFileExact(oldKey: string, newKey: string): Promise<void> {
+    const src = String(oldKey);
+    const dst = String(newKey);
+    try {
+        await s3Client.send(new CopyObjectCommand({
+            Bucket: bucket,
+            CopySource: `${bucket}/${src}`,
+            Key: dst,
+        }));
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: src }));
+    } catch (err) {
+        console.error('Error renaming file:', src, '->', dst, err);
+        throw err;
+    }
+}
+
 // Clear cache periodically (singleton)
 declare global {
     // eslint-disable-next-line no-var

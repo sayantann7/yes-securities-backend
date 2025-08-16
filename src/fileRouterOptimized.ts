@@ -8,8 +8,9 @@ import {
     deleteFolderRecursively, 
     getIconUploadUrl, 
     getCustomIconUrlOptimized, 
-    deleteFile,
-    renameFolderExact
+  deleteFile,
+  renameFolderExact,
+  renameFileExact
 } from "./awsOptimized";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
@@ -279,6 +280,31 @@ router.delete('/files/delete', async (req: Request, res: Response) => {
   }
 });
 
+// Rename a single file (PUT /api/files/rename)
+router.put('/files/rename', async (req: Request, res: Response) => {
+  try {
+    const { oldPath, newName } = req.body || {};
+    if (!oldPath || !newName || typeof oldPath !== 'string' || typeof newName !== 'string') {
+      res.status(400).json({ error: 'Old path and new name are required' });
+      return;
+    }
+    // Decode URI components if needed
+    let decodedOld = oldPath;
+    try { decodedOld = decodeURIComponent(oldPath); } catch {}
+    const oldKey = toS3Key(decodedOld);
+    // Build new key in the same folder
+    const parts = oldKey.split('/');
+    const fileName = parts.pop(); // old filename
+    const dir = parts.join('/') + (parts.length ? '/' : '');
+    const newKey = toS3Key(dir + newName);
+    await renameFileExact(oldKey, newKey);
+    res.json({ message: 'File renamed', from: oldKey, to: newKey });
+  } catch (err) {
+    console.error('Error renaming file:', err);
+    res.status(500).json({ error: 'Failed to rename file' });
+  }
+});
+
 // Create folder
 router.post('/folders/create', async (req: Request, res: Response) => {
   try {
@@ -365,20 +391,22 @@ router.put('/folders/rename', async (req: Request, res: Response) => {
     let decodedOld = oldPath;
     try { decodedOld = decodeURIComponent(oldPath); } catch {}
 
-    // oldPath could be like "/Parent/Sub/" or "Parent/Sub/"
-    let src = toS3Prefix(decodedOld.replace(/^icons\//, '')); // never rename icons here
-
+    // Normalize source prefix (content lives under leading '/')
+    let srcPrefix = toS3Prefix(decodedOld.replace(/^icons\//, ''));
     // Build destination prefix in same parent directory
-    const parts = src.replace(/^\/+/, '').split('/').filter(Boolean);
-    parts.pop(); // remove old folder name
-    const dst = toS3Prefix((parts.length ? '/' + parts.join('/') : '/') + '/' + newName);
+    const parts = srcPrefix.replace(/^\/+/, '').split('/').filter(Boolean);
+    parts.pop();
+    const dstPrefix = toS3Prefix((parts.length ? '/' + parts.join('/') : '/') + '/' + newName);
 
-    const result = await renameFolderExact(src.replace(/^\/+/, ''), dst.replace(/^\/+/, ''));
+    const result = await renameFolderExact(
+      srcPrefix.replace(/^\/+/, ''),
+      dstPrefix.replace(/^\/+/, '')
+    );
 
     // Clear caches
     bookmarkCache.clear();
 
-    res.json({ message: 'Folder renamed', from: src, to: dst, ...result });
+    res.json({ message: 'Folder renamed', from: srcPrefix, to: dstPrefix, ...result });
   } catch (err) {
     console.error('Error renaming folder:', err);
     res.status(500).json({ error: 'Failed to rename folder' });
