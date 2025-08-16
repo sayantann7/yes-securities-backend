@@ -148,7 +148,7 @@ async function batchProcessIcons(items: string[], concurrencyLimit: number = 10)
     return results;
 }
 
-function canonicalKey(input: string): string {
+export function canonicalKey(input: string): string {
     // remove leading and trailing slashes
     return String(input || '').replace(/^\/+/, '').replace(/\/+$/, '');
 }
@@ -283,6 +283,15 @@ export async function getSignedUploadUrl(path: string, contentType?: string): Pr
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 }
 
+/** Invalidate icon cache entries for specific item paths */
+export function invalidateIconCacheFor(paths: string[]) {
+    for (const p of paths) {
+        const key = canonicalKey(p);
+        iconCache.delete(key);
+        cacheTimestamps.delete(key);
+    }
+}
+
 /**
  * Recursively delete a folder (all objects under a prefix)
  */
@@ -361,6 +370,40 @@ export async function renameFileExact(oldKey: string, newKey: string): Promise<v
         console.error('Error renaming file:', src, '->', dst, err);
         throw err;
     }
+}
+
+/**
+ * Rename one or more icon objects associated with an item path, preserving file extension.
+ * If multiple icon formats exist, all will be moved.
+ */
+export async function renameIconsForItem(oldItemPath: string, newItemPath: string): Promise<{ renamed: number; attempts: Array<{ from: string; to: string; ok: boolean; error?: string }> }> {
+    const exts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+    const enc = (k: string) => encodeURIComponent(k).replace(/%2F/g, '/');
+    const attempts: Array<{ from: string; to: string; ok: boolean; error?: string }> = [];
+    let renamed = 0;
+    for (const ext of exts) {
+        const fromKey = buildIconKey(oldItemPath, ext);
+        try {
+            // Probe existence first
+            await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: fromKey }));
+        } catch {
+            // Not found, skip this ext
+            continue;
+        }
+        const toKey = buildIconKey(newItemPath, ext);
+        try {
+            await s3Client.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${enc(fromKey)}`, Key: toKey }));
+            await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: fromKey }));
+            attempts.push({ from: fromKey, to: toKey, ok: true });
+            renamed++;
+        } catch (e: any) {
+            console.error('Error renaming icon:', fromKey, '->', toKey, e);
+            attempts.push({ from: fromKey, to: toKey, ok: false, error: e?.message || String(e) });
+        }
+    }
+    // Invalidate cache entries for both paths
+    invalidateIconCacheFor([oldItemPath, newItemPath]);
+    return { renamed, attempts };
 }
 
 // Clear cache periodically (singleton)

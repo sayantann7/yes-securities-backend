@@ -10,7 +10,8 @@ import {
     getCustomIconUrlOptimized, 
   deleteFile,
   renameFolderExact,
-  renameFileExact
+  renameFileExact,
+  renameIconsForItem
 } from "./awsOptimized";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
@@ -301,8 +302,10 @@ router.put('/files/rename', async (req: Request, res: Response) => {
     const fileName = parts.pop(); // old filename
     const dir = parts.join('/') + (parts.length ? '/' : '');
     const newKey = toS3Key(dir + newName);
-    await renameFileExact(oldKey, newKey);
-    res.json({ message: 'File renamed', from: oldKey, to: newKey });
+  await renameFileExact(oldKey, newKey);
+  // Also rename any custom icon associated with this file path
+  const iconResult = await renameIconsForItem(decodedOld, dir + newName);
+  res.json({ message: 'File renamed', from: oldKey, to: newKey, icon: iconResult });
   } catch (err) {
     console.error('Error renaming file:', err);
     res.status(500).json({ error: 'Failed to rename file' });
@@ -403,7 +406,7 @@ router.put('/folders/rename', async (req: Request, res: Response) => {
   const parent = parts.length ? `/${parts.join('/')}` : '/';
   const dstPrefix = toS3Prefix(`${parent}/${newName}`);
 
-    console.log('[folders/rename] Attempting rename:', { from: srcPrefix, to: dstPrefix });
+  console.log('[folders/rename] Attempting rename:', { from: srcPrefix, to: dstPrefix });
     let result = await renameFolderExact(srcPrefix, dstPrefix);
 
     // Fallback: if nothing moved, try without leading slash (in case objects are stored without it)
@@ -416,10 +419,13 @@ router.put('/folders/rename', async (req: Request, res: Response) => {
       }
     }
 
-    // Clear caches
+  // Rename icons for this folder path as well (icon filename is derived from item path)
+  const iconResult = await renameIconsForItem(srcPrefix, dstPrefix);
+
+  // Clear caches
     bookmarkCache.clear();
 
-    res.json({ message: 'Folder renamed', from: srcPrefix, to: dstPrefix, ...result });
+  res.json({ message: 'Folder renamed', from: srcPrefix, to: dstPrefix, ...result, icon: iconResult });
   } catch (err) {
     console.error('Error renaming folder:', err);
     res.status(500).json({ error: 'Failed to rename folder' });
