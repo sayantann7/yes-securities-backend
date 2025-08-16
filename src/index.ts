@@ -69,6 +69,16 @@ const server = app.listen(PORT, async () => {
   }
 });
 
+// Tune HTTP server timeouts for long-running S3 operations
+try {
+  // @ts-ignore Node's HTTP server in Express provides these setters
+  server.keepAliveTimeout = Math.max(60000, server.keepAliveTimeout || 0); // 60s
+  // @ts-ignore
+  server.headersTimeout = Math.max(65000, server.headersTimeout || 0);     // 65s
+  // @ts-ignore
+  server.requestTimeout = Math.max(120000, server.requestTimeout || 0);    // 120s
+} catch {}
+
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully');

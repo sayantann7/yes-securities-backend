@@ -222,10 +222,10 @@ router.post(
   "/files/upload",
   async (req: Request, res: Response) => {
     try {
-      const { key: keyRaw } = req.body || {};
+  const { key: keyRaw, contentType } = req.body || {};
       if (!keyRaw || typeof keyRaw !== 'string') { res.status(400).json({ error: 'key is required' }); return; }
       const key = toS3Key(decodeURIComponent(keyRaw));
-      const url = await getSignedUploadUrl(key);
+  const url = await getSignedUploadUrl(key, typeof contentType === 'string' ? contentType : undefined);
       res.json({ url });
     } catch (err) {
       console.error(err);

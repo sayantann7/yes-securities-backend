@@ -7,8 +7,10 @@ import { Agent as HttpsAgent } from 'https';
 require('dotenv').config();
 
 // Configure S3 client with proper timeouts, retries and keep-alive agents
-const S3_CONN_TIMEOUT = parseInt(process.env.S3_CONN_TIMEOUT || '20000', 10); // 20s
-const S3_REQ_TIMEOUT = parseInt(process.env.S3_REQ_TIMEOUT || '45000', 10);   // 45s
+// Clamp timeouts to avoid overly aggressive low values from env
+function clamp(n: number, min: number, max: number) { return Math.max(min, Math.min(max, n)); }
+const S3_CONN_TIMEOUT = clamp(parseInt(process.env.S3_CONN_TIMEOUT || '20000', 10), 5000, 60000); // 5s..60s
+const S3_REQ_TIMEOUT  = clamp(parseInt(process.env.S3_REQ_TIMEOUT  || '45000', 10), 30000, 120000); // 30s..120s
 const S3_MAX_ATTEMPTS = parseInt(process.env.S3_MAX_ATTEMPTS || '5', 10);
 
 const httpHandler = new NodeHttpHandler({
@@ -274,8 +276,10 @@ export async function getSignedDownloadUrl(path: string): Promise<string> {
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 }
 
-export async function getSignedUploadUrl(path: string): Promise<string> {
-    let command = new PutObjectCommand({ Bucket: bucket, Key: path });
+export async function getSignedUploadUrl(path: string, contentType?: string): Promise<string> {
+    const params: any = { Bucket: bucket, Key: path };
+    if (contentType && typeof contentType === 'string') params.ContentType = contentType;
+    const command = new PutObjectCommand(params);
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 }
 
