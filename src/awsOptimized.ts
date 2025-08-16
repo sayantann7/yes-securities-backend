@@ -1,16 +1,27 @@
-import { GetObjectCommand, PutObjectCommand, CopyObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, CopyObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { Agent as HttpAgent } from 'http';
+import { Agent as HttpsAgent } from 'https';
 require('dotenv').config();
 
-// Configure S3 client with proper timeouts and connection limits
+// Configure S3 client with proper timeouts, retries and keep-alive agents
+const S3_CONN_TIMEOUT = parseInt(process.env.S3_CONN_TIMEOUT || '20000', 10); // 20s
+const S3_REQ_TIMEOUT = parseInt(process.env.S3_REQ_TIMEOUT || '45000', 10);   // 45s
+const S3_MAX_ATTEMPTS = parseInt(process.env.S3_MAX_ATTEMPTS || '5', 10);
+
+const httpHandler = new NodeHttpHandler({
+    connectionTimeout: S3_CONN_TIMEOUT,
+    requestTimeout: S3_REQ_TIMEOUT,
+    httpAgent: new HttpAgent({ keepAlive: true, maxSockets: 64 }),
+    httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: 64 }),
+});
+
 const s3Client = new S3Client({ 
-    region: 'ap-south-1',
-    requestHandler: {
-        connectionTimeout: 10000, // 10 seconds
-        requestTimeout: 30000,    // 30 seconds
-    },
-    maxAttempts: 3,
+    region: process.env.AWS_REGION || 'ap-south-1',
+    requestHandler: httpHandler,
+    maxAttempts: S3_MAX_ATTEMPTS,
 });
 
 const bucket = process.env.S3_BUCKET_NAME;
@@ -77,10 +88,10 @@ export async function getCustomIconUrlOptimized(itemPath: string): Promise<strin
         const exts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
         const keyCandidates = exts.map((ext) => buildIconKey(cacheKey, ext));
 
-        // Probe concurrently for first existing icon
+        // Probe concurrently for first existing icon (HEAD requests, cheaper/faster than GET)
         const checks = keyCandidates.map(async (k) => {
             try {
-                await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+                await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: k }));
                 return k;
             } catch {
                 return null;
@@ -144,10 +155,8 @@ function makePrefixes(prefix: string = ''): string[] {
     const raw = typeof prefix === 'string' ? prefix : '';
     const noSlash = canonicalKey(raw);
     const withSlash = noSlash ? `/${noSlash}` : '/';
-    const set = new Set<string>();
-    set.add(noSlash);      // e.g., "folder/sub/" -> "folder/sub"
-    set.add(withSlash);    // e.g., "/folder/sub"
-    return Array.from(set);
+    // Use a single normalized prefix to avoid duplicate S3 calls
+    return [withSlash];
 }
 
 async function listOnce(prefix: string, maxItems: number) {
@@ -202,17 +211,13 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
         }
     }
 
-    // Batch icon URLs for all items (folders and files) using canonical keys
-    const allKeys = [
-        ...Array.from(foldersMap.values()).map(f => f.key),
-        ...Array.from(filesMap.values()).map(f => f.key),
-    ];
-
+    // Only fetch icons for folders to reduce S3 calls and latency
+    const folderKeys = Array.from(foldersMap.values()).map(f => f.key);
     const iconResults = await (async () => {
         const out = new Map<string, string | null>();
         const concurrency = 5;
-        for (let i = 0; i < allKeys.length; i += concurrency) {
-            const batch = allKeys.slice(i, i + concurrency);
+        for (let i = 0; i < folderKeys.length; i += concurrency) {
+            const batch = folderKeys.slice(i, i + concurrency);
             const promises = batch.map(async (k) => ({ k, url: await getCustomIconUrlOptimized(k) }));
             const res = await Promise.allSettled(promises);
             for (const r of res) {
@@ -223,7 +228,7 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
     })();
 
     const folders = Array.from(foldersMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
-    const files = Array.from(filesMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
+    const files = Array.from(filesMap.values()).map(f => ({ key: f.key })); // no icon lookup for files
 
     return { folders, files, isTruncated: false, continuationToken: undefined };
 }

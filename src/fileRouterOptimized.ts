@@ -116,8 +116,8 @@ router.post(
         const s3Prefix = toS3Prefix(typeof prefixRaw === 'string' ? prefixRaw : '');
 
         const data = loadIcons 
-            ? await listChildrenWithIconsOptimized(s3Prefix, maxItems)
-            : await listChildrenFast(s3Prefix, maxItems);
+            ? await listChildrenWithIconsOptimized(s3Prefix, Math.min(maxItems, 500))
+            : await listChildrenFast(s3Prefix, Math.min(maxItems, 1000));
 
         // Filter: never show the synthetic root "/" or anything under icons/
         const filteredFolders = (data.folders || []).filter(f => {
