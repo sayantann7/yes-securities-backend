@@ -20,7 +20,11 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 // Helpers to normalize API inputs to S3-compatible prefixes/keys respecting your bucket layout
 // Content lives under the "/" folder, icons live under "icons/" (no leading slash)
-function normalizeSlashes(v: string) { return v.replace(/\\+/g, '/').replace(/\/\/+/, '/'); }
+function normalizeSlashes(v: string) {
+  // 1) Convert backslashes to forward slashes
+  // 2) Collapse duplicate forward slashes globally (e.g., '//' -> '/')
+  return v.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+}
 
 function toS3Prefix(input?: string): string {
   let p = (input || '').trim();
@@ -391,12 +395,13 @@ router.put('/folders/rename', async (req: Request, res: Response) => {
     let decodedOld = oldPath;
     try { decodedOld = decodeURIComponent(oldPath); } catch {}
 
-    // Normalize source prefix (content lives under leading '/')
-    let srcPrefix = toS3Prefix(decodedOld.replace(/^icons\//, ''));
-    // Build destination prefix in same parent directory
-    const parts = srcPrefix.replace(/^\/+/, '').split('/').filter(Boolean);
-    parts.pop();
-    const dstPrefix = toS3Prefix((parts.length ? '/' + parts.join('/') : '/') + '/' + newName);
+  // Normalize source prefix (content lives under leading '/')
+  let srcPrefix = toS3Prefix(decodedOld.replace(/^icons\//, ''));
+  // Build destination prefix in same parent directory
+  const parts = srcPrefix.replace(/^\/+/, '').split('/').filter(Boolean);
+  parts.pop();
+  const parent = parts.length ? `/${parts.join('/')}` : '/';
+  const dstPrefix = toS3Prefix(`${parent}/${newName}`);
 
     console.log('[folders/rename] Attempting rename:', { from: srcPrefix, to: dstPrefix });
     let result = await renameFolderExact(srcPrefix, dstPrefix);

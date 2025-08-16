@@ -349,10 +349,11 @@ export async function deleteFile(key: string): Promise<void> {
 export async function renameFileExact(oldKey: string, newKey: string): Promise<void> {
     const src = String(oldKey);
     const dst = String(newKey);
+    const enc = (k: string) => encodeURIComponent(k).replace(/%2F/g, '/');
     try {
         await s3Client.send(new CopyObjectCommand({
             Bucket: bucket,
-            CopySource: `${bucket}/${src}`,
+            CopySource: `${bucket}/${enc(src)}`,
             Key: dst,
         }));
         await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: src }));
@@ -384,16 +385,19 @@ if (!globalThis.__iconCacheCleanupInterval__) {
  * Rename a folder by copying all objects from oldPrefix to newPrefix and deleting originals
  */
 export async function renameFolderExact(oldPrefix: string, newPrefix: string): Promise<{ moved: number; deleted: number }> {
-    // Normalize to S3 object key prefixes (no leading slash)
-    const src = String(oldPrefix).replace(/^\/+/, '');
-    const dst = String(newPrefix).replace(/^\/+/, '');
+    // Preserve leading slash if present (keys in this bucket appear to use it); ensure trailing slash
+    let src = String(oldPrefix);
+    let dst = String(newPrefix);
+    if (!src.endsWith('/')) src += '/';
+    if (!dst.endsWith('/')) dst += '/';
+    const enc = (k: string) => encodeURIComponent(k).replace(/%2F/g, '/');
 
     let continuationToken: string | undefined = undefined;
     let moved = 0;
     let deleted = 0;
 
     do {
-    const listCmd = new ListObjectsV2Command({
+        const listCmd = new ListObjectsV2Command({
             Bucket: bucket,
             Prefix: src,
             ContinuationToken: continuationToken,
@@ -407,7 +411,7 @@ export async function renameFolderExact(oldPrefix: string, newPrefix: string): P
             try {
                 await s3Client.send(new CopyObjectCommand({
                     Bucket: bucket,
-                    CopySource: `${bucket}/${obj.Key}`,
+                    CopySource: `${bucket}/${enc(obj.Key)}`,
                     Key: targetKey,
                 }));
                 moved++;
