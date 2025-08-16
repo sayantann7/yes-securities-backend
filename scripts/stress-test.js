@@ -6,7 +6,7 @@
   - Live progress printed every second (RPS, successes, failures, latency percentiles)
 
   Usage (fish shell examples):
-    set -x API_BASE_URL http://139.59.74.195:3000
+    set -x API_BASE_URL https://ysl-sales-repo.sayantan.space/
     set -x CONCURRENCY 300
     set -x DURATION_SEC 120
     set -x LOGIN_EMAIL your_user@example.com
@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const BASE_URL = process.env.API_BASE_URL || 'http://139.59.74.195:3000';
+const BASE_URL = process.env.API_BASE_URL || 'https://ysl-sales-repo.sayantan.space/';
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || '300', 10);
 const DURATION_SEC = parseInt(process.env.DURATION_SEC || '120', 10);
 const USERS_FILE = process.env.USERS_FILE || '';
