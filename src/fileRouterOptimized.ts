@@ -398,10 +398,18 @@ router.put('/folders/rename', async (req: Request, res: Response) => {
     parts.pop();
     const dstPrefix = toS3Prefix((parts.length ? '/' + parts.join('/') : '/') + '/' + newName);
 
-    const result = await renameFolderExact(
-      srcPrefix.replace(/^\/+/, ''),
-      dstPrefix.replace(/^\/+/, '')
-    );
+    console.log('[folders/rename] Attempting rename:', { from: srcPrefix, to: dstPrefix });
+    let result = await renameFolderExact(srcPrefix, dstPrefix);
+
+    // Fallback: if nothing moved, try without leading slash (in case objects are stored without it)
+    if ((result?.moved || 0) === 0 && (result?.deleted || 0) === 0) {
+      const srcAlt = srcPrefix.replace(/^\/+/, '');
+      const dstAlt = dstPrefix.replace(/^\/+/, '');
+      if (srcAlt !== srcPrefix) {
+        console.log('[folders/rename] No objects moved on first attempt, retrying without leading slash', { from: srcAlt, to: dstAlt });
+        result = await renameFolderExact(srcAlt, dstAlt);
+      }
+    }
 
     // Clear caches
     bookmarkCache.clear();

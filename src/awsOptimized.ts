@@ -384,15 +384,16 @@ if (!globalThis.__iconCacheCleanupInterval__) {
  * Rename a folder by copying all objects from oldPrefix to newPrefix and deleting originals
  */
 export async function renameFolderExact(oldPrefix: string, newPrefix: string): Promise<{ moved: number; deleted: number }> {
-    const src = String(oldPrefix);
-    const dst = String(newPrefix);
+    // Normalize to S3 object key prefixes (no leading slash)
+    const src = String(oldPrefix).replace(/^\/+/, '');
+    const dst = String(newPrefix).replace(/^\/+/, '');
 
     let continuationToken: string | undefined = undefined;
     let moved = 0;
     let deleted = 0;
 
     do {
-        const listCmd = new ListObjectsV2Command({
+    const listCmd = new ListObjectsV2Command({
             Bucket: bucket,
             Prefix: src,
             ContinuationToken: continuationToken,
@@ -420,5 +421,6 @@ export async function renameFolderExact(oldPrefix: string, newPrefix: string): P
         continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
 
+    console.log('[renameFolderExact] completed', { from: src, to: dst, moved, deleted });
     return { moved, deleted };
 }
