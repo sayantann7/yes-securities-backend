@@ -33,7 +33,7 @@ app.use(express.json({ limit: '5mb' }));
 app.use(cors());
 
 // Basic health endpoint
-app.get('/healthz', async (_req, res) => {
+app.get('/health', async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     const mem = process.memoryUsage();
