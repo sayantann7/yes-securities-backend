@@ -9,8 +9,6 @@ import { prisma } from "./prisma";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-// Bind to all interfaces; set HOST="::" for dual-stack where supported
-const HOST = process.env.HOST || '0.0.0.0';
 
 // Warn if critical env vars are missing (don't crash on boot)
 if (!process.env.JWT_SECRET) {
@@ -46,7 +44,7 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.use("/api", fileRouter);
+app.use("/api", fileRouter);3000
 app.use("/user", userRouter);
 app.use("/admin", adminRouter);
 app.use("/bookmark", bookmarkRouter);
@@ -58,9 +56,9 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   res.status(status).json({ error: err?.message || "Internal server error" });
 });
 
-const server = app.listen(PORT, HOST as any, async () => {
-  console.log(`Server running on http://${HOST}:${PORT}`);
-  
+const server = app.listen(PORT, async () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+
   // Test database connection on startup
   try {
     await prisma.$queryRaw`SELECT 1`;
