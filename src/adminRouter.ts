@@ -7,18 +7,39 @@ import { deleteUserByEmail } from './services';
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-//@ts-ignore
+// Helper to safely normalize any cell value to a trimmed string
+function norm(val: any): string {
+  if (val === undefined || val === null) return '';
+  return String(val).trim();
+}
+
+// Accept both XLSX and CSV uploads; parse & diff users
+// @ts-ignore
 router.post('/users/import', upload.single('file'), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'Missing employee list file' });
       }
 
-      // Parse the uploaded Excel file
+      // Parse the uploaded file (supports .xlsx / .csv via xlsx library)
       const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const uploadedEmployees: Array<{ fullname?: string; email: string; 'ad-id'?: string }> =
-        xlsx.utils.sheet_to_json(sheet);
+      const uploadedEmployees: Array<Record<string, any>> = xlsx.utils.sheet_to_json(sheet, {
+        defval: '', // keep empty strings instead of undefined
+        blankrows: false
+      });
+
+      // Normalize records with flexible header names (case / dash variants)
+      const normalized = uploadedEmployees.map(row => {
+        const emailRaw = row.email ?? row.Email ?? row['E-mail'] ?? row['e-mail'] ?? row['EMAIL'];
+        const fullnameRaw = row.fullname ?? row['full name'] ?? row['Full Name'] ?? row['Full_Name'] ?? row['FULLNAME'] ?? row['name'] ?? row['Name'];
+        const adIdRaw = row['ad-id'] ?? row['AD-ID'] ?? row['adid'] ?? row['ADID'] ?? row['AdId'] ?? row['Ad-ID'];
+        return {
+          fullname: norm(fullnameRaw),
+          email: norm(emailRaw),
+          adId: norm(adIdRaw)
+        };
+      }).filter(r => r.email); // drop rows without any email value
 
       // Get all current non-admin users from the database
       const currentUsers = await prisma.user.findMany({
@@ -42,8 +63,8 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
 
       // Create a set of all uploaded email addresses for quick lookup
       const uploadedEmails = new Set(
-        uploadedEmployees
-          .map(emp => emp.email?.trim().toLowerCase())
+        normalized
+          .map(emp => norm(emp.email).toLowerCase())
           .filter(email => !!email)
       );
 
@@ -67,33 +88,29 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       }
 
       // 2. Handle users to be added (in uploaded list but not in database)
-      for (const employee of uploadedEmployees) {
-        const email = employee.email?.trim().toLowerCase();
-        const fullname = employee.fullname?.trim() || '';
-        const adId = employee['ad-id']?.trim();
-        
+      for (const employee of normalized) {
+        const email = norm(employee.email).toLowerCase();
+        const fullname = norm(employee.fullname);
+        const adId = norm(employee.adId);
+
         if (!email) {
-          results.errors.push(`Missing email in uploaded file`);
+          results.errors.push('Missing email in uploaded file row');
           continue;
         }
-
         if (!adId) {
           results.errors.push(`Missing ad-id for user ${email} in uploaded file`);
           continue;
         }
-
         if (!currentUsersByEmail.has(email)) {
           try {
-            // Store ad-id directly as password without hashing
             await prisma.user.create({
               data: {
                 fullname,
                 email,
-                password: adId,
-                role: 'user',
-              },
+                password: adId, // stored as-is per existing logic
+                role: 'user'
+              }
             });
-            
             results.added++;
           } catch (err: any) {
             results.errors.push(`Failed to add user ${email}: ${err.message || err}`);
@@ -112,7 +129,7 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       });
     } catch (err: any) {
       console.error('Import error:', err);
-      return res.status(500).json({ error: err.message || 'Import failed' });
+  return res.status(500).json({ error: err.message || 'Import failed' });
     }
   }
 );

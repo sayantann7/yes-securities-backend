@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const BASE_URL = process.env.API_BASE_URL || 'https://ysl-sales-repo.sayantan.space/';
+const BASE_URL = process.env.API_BASE_URL || 'https://salesrepo.ysil.in/';
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || '300', 10);
 const DURATION_SEC = parseInt(process.env.DURATION_SEC || '120', 10);
 const USERS_FILE = process.env.USERS_FILE || '';
