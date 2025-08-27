@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
+import { BookmarkService } from "./bookmarkServiceOptimized";
 
 const router = Router();
 
@@ -408,6 +409,164 @@ router.post("/comment", async (req: Request, res: Response) => {
     console.error(err);
     res.status(500).json({ error: "Failed to add comment" });
   }
+});
+
+// --------------------------------------------------
+// Additional Comment Endpoints (CRUD + listing) to support admin web app
+// --------------------------------------------------
+// Get comments for a document
+// @ts-ignore
+router.get('/comments', async (req: Request, res: Response) => {
+  try {
+    const { documentId } = req.query;
+    if (!documentId) {
+      return res.status(400).json({ error: 'documentId is required' });
+    }
+    const comments = await prisma.comment.findMany({
+      where: { documentId: String(documentId) },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        user: { select: { id: true, fullname: true, email: true } }
+      }
+    });
+    res.json({ message: 'Comments fetched successfully', comments });
+  } catch (err) {
+    console.error('Failed to fetch comments:', err);
+    res.status(500).json({ error: 'Failed to fetch comments' });
+  }
+});
+
+// Get all comments grouped by document
+// @ts-ignore
+router.get('/comments/all', async (_req: Request, res: Response) => {
+  try {
+    const comments = await prisma.comment.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: { user: { select: { id: true, fullname: true, email: true } } }
+    });
+    const commentsByDocument: Record<string, any[]> = {};
+    for (const c of comments) {
+      if (!commentsByDocument[c.documentId]) commentsByDocument[c.documentId] = [];
+      commentsByDocument[c.documentId].push(c);
+    }
+    res.json({ message: 'All comments fetched successfully', commentsByDocument });
+  } catch (err) {
+    console.error('Failed to fetch all comments:', err);
+    res.status(500).json({ error: 'Failed to fetch all comments' });
+  }
+});
+
+// Update a comment: since frontend provides documentId + comment text (new), update latest comment by same user on that document
+// @ts-ignore
+router.put('/comment', async (req: Request, res: Response) => {
+  try {
+    const { email, documentId, comment } = req.body;
+    if (!email || !documentId || !comment) {
+      return res.status(400).json({ error: 'Email, documentId and comment are required' });
+    }
+    const user = await prisma.user.findUnique({ where: { email: String(email) } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    // find latest comment by user on document
+    const existing = await prisma.comment.findFirst({
+      where: { userId: user.id, documentId: String(documentId) },
+      orderBy: { createdAt: 'desc' }
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'No existing comment to update' });
+    }
+    const updated = await prisma.comment.update({
+      where: { id: existing.id },
+      data: { content: String(comment), updatedAt: new Date() }
+    });
+    res.json({ message: 'Comment updated successfully', comment: updated });
+  } catch (err) {
+    console.error('Failed to update comment:', err);
+    res.status(500).json({ error: 'Failed to update comment' });
+  }
+});
+
+// Delete a comment: identify by user + document + exact content match (first match)
+// @ts-ignore
+router.delete('/comment', async (req: Request, res: Response) => {
+  try {
+    const { email, documentId, comment } = req.body;
+    if (!email || !documentId || !comment) {
+      return res.status(400).json({ error: 'Email, documentId and comment are required' });
+    }
+    const user = await prisma.user.findUnique({ where: { email: String(email) } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const existing = await prisma.comment.findFirst({
+      where: { userId: user.id, documentId: String(documentId), content: String(comment) },
+      orderBy: { createdAt: 'asc' }
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+    await prisma.comment.delete({ where: { id: existing.id } });
+    res.json({ message: 'Comment deleted successfully' });
+  } catch (err) {
+    console.error('Failed to delete comment:', err);
+    res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
+// --------------------------------------------------
+// Recent Documents Endpoints (persist in user.recentDocs JSON array)
+// --------------------------------------------------
+// @ts-ignore
+router.get('/recent-documents', async (req: Request, res: Response) => {
+  try {
+    const { userEmail } = req.query;
+    if (!userEmail) return res.status(400).json({ error: 'userEmail is required' });
+    const user = await prisma.user.findUnique({ where: { email: String(userEmail) } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ message: 'Recent documents fetched successfully', recentDocuments: user.recentDocs || [] });
+  } catch (err) {
+    console.error('Failed to fetch recent documents:', err);
+    res.status(500).json({ error: 'Failed to fetch recent documents' });
+  }
+});
+
+// @ts-ignore
+router.post('/recent-documents', async (req: Request, res: Response) => {
+  try {
+    const { userEmail, document } = req.body;
+    if (!userEmail || !document) return res.status(400).json({ error: 'userEmail and document are required' });
+    const user = await prisma.user.findUnique({ where: { email: String(userEmail) } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const current: string[] = Array.isArray(user.recentDocs) ? [...user.recentDocs] : [];
+    const filtered = current.filter(d => d !== document);
+    filtered.unshift(document);
+    const trimmed = filtered.slice(0, 20); // cap list
+    const updated = await prisma.user.update({ where: { id: user.id }, data: { recentDocs: trimmed } });
+    res.json({ message: 'Recent documents updated', recentDocuments: updated.recentDocs || [] });
+  } catch (err) {
+    console.error('Failed to update recent documents:', err);
+    res.status(500).json({ error: 'Failed to update recent documents' });
+  }
+});
+
+// --------------------------------------------------
+// Bookmark bridging endpoints under /user to align with admin web app expectations
+// These delegate to BookmarkService methods (which expect req/res)
+// --------------------------------------------------
+// @ts-ignore
+router.get('/bookmarks', async (req: Request, res: Response) => {
+  await BookmarkService.getBookmarks(req, res);
+});
+
+// @ts-ignore
+router.post('/bookmarks', async (req: Request, res: Response) => {
+  await BookmarkService.createBookmark(req, res);
+});
+
+// @ts-ignore
+router.delete('/bookmarks/:itemId', async (req: Request, res: Response) => {
+  await BookmarkService.deleteBookmark(req, res);
 });
 
 // @ts-ignore
@@ -956,6 +1115,13 @@ router.post("/admin/ping-users", async (req, res) => {
 
 // Get all users with metrics (admin only)
 // @ts-ignore
+// In-memory cache for overall metrics (TTL ~30s)
+let overallMetricsCache: { data: any; fetchedAt: number } | null = null;
+const OVERALL_METRICS_TTL_MS = 30 * 1000;
+
+// Paginated users metrics endpoint with cursor pagination, filtering & sorting
+// Query params: limit (default 50), cursor (user id), q (search), sort, order, activity (active|inactive|never), includeOverall=1 (force include metrics on non-first pages)
+// @ts-ignore
 router.get("/admin/users-metrics", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -968,91 +1134,187 @@ router.get("/admin/users-metrics", async (req, res) => {
     const userId = decoded.userId;
 
     // Verify user is admin
-    const user = await prisma.user.findUnique({
-      where: { id: userId }
-    });
-
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.role !== 'admin') {
       return res.status(403).json({ error: "Admin access required" });
     }
 
-    // Get all users with their metrics
-    const allUsers = await prisma.user.findMany({
-      where: {
-        role: { not: 'admin' }
-      },
+    // Parse query params
+    const rawLimit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(Math.max(rawLimit, 1), 200);
+    const cursor = (req.query.cursor as string) || undefined;
+    const q = (req.query.q as string || '').trim();
+    const sort = (req.query.sort as string) || 'createdAt';
+    const order = (req.query.order as string) === 'asc' ? 'asc' : 'desc';
+    const activity = (req.query.activity as string) || undefined; // active | inactive | never
+    const includeOverall = req.query.includeOverall === '1' || !cursor; // include on first page by default
+
+    // Whitelist sortable fields
+    const allowedSort = new Set(['createdAt','lastSignIn','timeSpent','documentsViewed','numberOfSignIns','fullname']);
+    const sortField = allowedSort.has(sort) ? sort : 'createdAt';
+
+    // Build where clause
+    const where: any = { role: { not: 'admin' } };
+    if (q) {
+      where.OR = [
+        { fullname: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } }
+      ];
+    }
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (activity === 'active') {
+      where.AND = [
+        ...(where.AND || []),
+        { numberOfSignIns: { gt: 0 } },
+        { lastSignIn: { gte: sevenDaysAgo } }
+      ];
+    } else if (activity === 'inactive') {
+      where.AND = [
+        ...(where.AND || []),
+        { OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null } ] }
+      ];
+    } else if (activity === 'never') {
+      where.AND = [
+        ...(where.AND || []),
+        { OR: [ { numberOfSignIns: 0 }, { lastSignIn: null } ] }
+      ];
+    }
+
+    // Build orderBy (ensure deterministic second key)
+    const orderBy: any = [{ [sortField]: order }];
+    if (sortField !== 'id') orderBy.push({ id: 'asc' });
+
+    // Fetch page (cursor-based)
+    const users = await prisma.user.findMany({
+      where,
       select: {
         id: true,
         fullname: true,
         email: true,
-        role: true,
         createdAt: true,
         lastSignIn: true,
         numberOfSignIns: true,
         documentsViewed: true,
-        timeSpent: true,
-        recentDocs: true
+        timeSpent: true
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy,
+      take: limit + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {})
     });
 
-    // Calculate days inactive for each user
-    const usersWithMetrics = allUsers.map(user => {
-      const lastSignIn = user.lastSignIn ? new Date(user.lastSignIn) : null;
-      const daysInactive = lastSignIn 
-        ? Math.floor((new Date().getTime() - lastSignIn.getTime()) / (1000 * 60 * 60 * 24))
-        : 999; // Very high number for users who never signed in
+    const hasNextPage = users.length > limit;
+    const pageItems = hasNextPage ? users.slice(0, limit) : users;
+    const nextCursor = hasNextPage ? pageItems[pageItems.length - 1].id : null;
 
+    // Enrich items with daysInactive & normalized lastSignIn string
+    const page = pageItems.map(u => {
+      const last = u.lastSignIn ? new Date(u.lastSignIn) : null;
+      const daysInactive = last ? Math.floor((now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24)) : 999;
       return {
-        ...user,
-        daysInactive,
-        lastSignIn: user.lastSignIn?.toISOString() || 'Never'
+        ...u,
+        lastSignIn: u.lastSignIn ? u.lastSignIn.toISOString() : 'Never',
+        daysInactive
       };
     });
 
-    // Calculate overall metrics
-    const totalUsers = allUsers.length;
-    // Active users: must have logged in at least once AND within the last 7 days
-    const activeUsers = usersWithMetrics.filter(u => (u.numberOfSignIns ?? 0) > 0 && u.daysInactive <= 7).length;
-    const neverLoggedInUsers = allUsers.filter(u => (u.numberOfSignIns ?? 0) === 0 || u.lastSignIn === null).length;
-    const inactiveUsers = totalUsers - activeUsers; // includes never logged in users
-    const totalTimeSpent = allUsers.reduce((sum, user) => sum + user.timeSpent, 0);
-    const totalDocumentViews = allUsers.reduce((sum, user) => sum + user.documentsViewed, 0);
-    const totalSignIns = allUsers.reduce((sum, user) => sum + user.numberOfSignIns, 0);
-    
-    // New users this week
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-    const newUsersThisWeek = allUsers.filter(user => new Date(user.createdAt) >= oneWeekAgo).length;
-    
-    // Most active user
-    const mostActiveUser = allUsers.reduce((prev, current) => 
-      current.timeSpent > prev.timeSpent ? current : prev,
-      allUsers[0] || { fullname: 'N/A', timeSpent: 0 }
-    );
+    let overallMetrics: any = undefined;
+    if (includeOverall) {
+      // Serve from cache if fresh
+      const fresh = overallMetricsCache && (Date.now() - overallMetricsCache.fetchedAt) < OVERALL_METRICS_TTL_MS;
+      if (fresh && overallMetricsCache) {
+        overallMetrics = overallMetricsCache.data;
+      } else {
+        // Compute overall metrics using lightweight aggregate queries
+        const oneWeekAgo = sevenDaysAgo;
+        const [totalUsers, activeUsersCount, neverLoggedInUsersCount, aggregates, mostActiveUser, newUsersThisWeek] = await Promise.all([
+          prisma.user.count({ where: { role: { not: 'admin' } } }),
+          prisma.user.count({ where: { role: { not: 'admin' }, numberOfSignIns: { gt: 0 }, lastSignIn: { gte: oneWeekAgo } } }),
+            prisma.user.count({ where: { role: { not: 'admin' }, OR: [ { numberOfSignIns: 0 }, { lastSignIn: null } ] } }),
+          prisma.user.aggregate({ where: { role: { not: 'admin' } }, _sum: { timeSpent: true, documentsViewed: true, numberOfSignIns: true } }),
+          prisma.user.findFirst({ where: { role: { not: 'admin' } }, orderBy: { timeSpent: 'desc' }, select: { fullname: true, timeSpent: true } }),
+          prisma.user.count({ where: { role: { not: 'admin' }, createdAt: { gte: oneWeekAgo } } })
+        ]);
 
-    const overallMetrics = {
-      totalUsers,
-      activeUsers,
-      inactiveUsers,
-      neverLoggedInUsers,
-      averageTimeSpent: totalUsers > 0 ? Math.round(totalTimeSpent / totalUsers) : 0,
-      totalDocumentViews,
-      averageSignIns: totalUsers > 0 ? Math.round(totalSignIns / totalUsers) : 0,
-      newUsersThisWeek,
-      mostActiveUser: {
-        name: mostActiveUser.fullname,
-        timeSpent: mostActiveUser.timeSpent
+        const inactiveUsers = totalUsers - activeUsersCount;
+        overallMetrics = {
+          totalUsers,
+          activeUsers: activeUsersCount,
+          inactiveUsers,
+          neverLoggedInUsers: neverLoggedInUsersCount,
+          averageTimeSpent: totalUsers > 0 ? Math.round((aggregates._sum.timeSpent || 0) / totalUsers) : 0,
+          totalDocumentViews: aggregates._sum.documentsViewed || 0,
+          averageSignIns: totalUsers > 0 ? Math.round((aggregates._sum.numberOfSignIns || 0) / totalUsers) : 0,
+          newUsersThisWeek,
+          mostActiveUser: mostActiveUser ? { name: mostActiveUser.fullname, timeSpent: mostActiveUser.timeSpent } : { name: 'N/A', timeSpent: 0 }
+        };
+        overallMetricsCache = { data: overallMetrics, fetchedAt: Date.now() };
       }
-    };
+    }
 
-    res.json({ 
-      users: usersWithMetrics,
+    res.json({
+      users: page,
+      pageInfo: { nextCursor, hasNextPage, count: page.length },
       overallMetrics
     });
   } catch (error: any) {
     console.error("Error fetching user metrics:", error);
     res.status(500).json({ error: "Failed to fetch user metrics" });
+  }
+});
+
+// Separate endpoint to force refresh overall metrics (optional client usage)
+// @ts-ignore
+router.get('/admin/users-overall', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const now = new Date();
+    const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const force = req.query.force === '1';
+
+    const fresh = !force && overallMetricsCache && (Date.now() - overallMetricsCache.fetchedAt) < OVERALL_METRICS_TTL_MS;
+    if (fresh && overallMetricsCache) {
+      return res.json({ overallMetrics: overallMetricsCache.data, cached: true });
+    }
+
+    const [totalUsers, activeUsersCount, neverLoggedInUsersCount, aggregates, mostActiveUser, newUsersThisWeek] = await Promise.all([
+      prisma.user.count({ where: { role: { not: 'admin' } } }),
+      prisma.user.count({ where: { role: { not: 'admin' }, numberOfSignIns: { gt: 0 }, lastSignIn: { gte: oneWeekAgo } } }),
+      prisma.user.count({ where: { role: { not: 'admin' }, OR: [ { numberOfSignIns: 0 }, { lastSignIn: null } ] } }),
+      prisma.user.aggregate({ where: { role: { not: 'admin' } }, _sum: { timeSpent: true, documentsViewed: true, numberOfSignIns: true } }),
+      prisma.user.findFirst({ where: { role: { not: 'admin' } }, orderBy: { timeSpent: 'desc' }, select: { fullname: true, timeSpent: true } }),
+      prisma.user.count({ where: { role: { not: 'admin' }, createdAt: { gte: oneWeekAgo } } })
+    ]);
+
+    const inactiveUsers = totalUsers - activeUsersCount;
+    const overallMetrics = {
+      totalUsers,
+      activeUsers: activeUsersCount,
+      inactiveUsers,
+      neverLoggedInUsers: neverLoggedInUsersCount,
+      averageTimeSpent: totalUsers > 0 ? Math.round((aggregates._sum.timeSpent || 0) / totalUsers) : 0,
+      totalDocumentViews: aggregates._sum.documentsViewed || 0,
+      averageSignIns: totalUsers > 0 ? Math.round((aggregates._sum.numberOfSignIns || 0) / totalUsers) : 0,
+      newUsersThisWeek,
+      mostActiveUser: mostActiveUser ? { name: mostActiveUser.fullname, timeSpent: mostActiveUser.timeSpent } : { name: 'N/A', timeSpent: 0 }
+    };
+    overallMetricsCache = { data: overallMetrics, fetchedAt: Date.now() };
+    res.json({ overallMetrics, cached: false });
+  } catch (error: any) {
+    console.error('Error fetching overall metrics:', error);
+    res.status(500).json({ error: 'Failed to fetch overall metrics' });
   }
 });
 
@@ -1257,27 +1519,6 @@ router.delete("/admin/comment/:commentId", async (req, res) => {
   }
 });
 
-// Bookmark endpoints - Now handled by optimized bookmark service
-// These endpoints have been moved to bookmarkRouterOptimized.ts for better organization
-// and crash-resistant design. The old implementation below is kept for reference but
-// the actual routing should use the optimized service.
-
-// For backward compatibility, we import and use the optimized bookmark service here
-import { BookmarkService } from "./bookmarkServiceOptimized";
-
-// @ts-ignore
-router.post("/bookmarks", async (req: Request, res: Response) => {
-  await BookmarkService.createBookmark(req, res);
-});
-
-// @ts-ignore
-router.delete("/bookmarks/:itemId", async (req: Request, res: Response) => {
-  await BookmarkService.deleteBookmark(req, res);
-});
-
-// @ts-ignore
-router.get("/bookmarks", async (req: Request, res: Response) => {
-  await BookmarkService.getBookmarks(req, res);
-});
+// (Legacy inline bookmark endpoints removed; handled earlier in file / dedicated router)
 
 export default router;
