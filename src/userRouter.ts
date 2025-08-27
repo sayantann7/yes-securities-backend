@@ -1140,7 +1140,7 @@ router.get("/admin/users-metrics", async (req, res) => {
     }
 
     // Parse query params
-    const rawLimit = parseInt(req.query.limit as string) || 50;
+  const rawLimit = parseInt(req.query.limit as string) || 20; // lowered default page size
     const limit = Math.min(Math.max(rawLimit, 1), 200);
     const cursor = (req.query.cursor as string) || undefined;
     const q = (req.query.q as string || '').trim();
