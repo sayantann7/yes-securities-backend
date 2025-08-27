@@ -1193,6 +1193,7 @@ router.get("/admin/users-metrics", async (req, res) => {
         id: true,
         fullname: true,
         email: true,
+  role: true,
         createdAt: true,
         lastSignIn: true,
         numberOfSignIns: true,
