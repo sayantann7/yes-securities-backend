@@ -1520,6 +1520,152 @@ router.delete("/admin/comment/:commentId", async (req, res) => {
   }
 });
 
+// --------------------------------------------------
+// Admin Users Export (CSV streaming or XLSX buffered)
+// GET /user/admin/users-export?activity=all|active|inactive&format=csv|xlsx
+// --------------------------------------------------
+// @ts-ignore
+router.get('/admin/users-export', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
+    const userId = decoded.userId;
+    const admin = await prisma.user.findUnique({ where: { id: userId } });
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const activity = (req.query.activity as string) || 'all'; // all|active|inactive
+    const format = (req.query.format as string) || 'csv'; // csv|xlsx
+
+    // Build where filter (always exclude admins)
+    const baseWhere: any = { role: { not: 'admin' } };
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (activity === 'active') {
+      baseWhere.AND = [
+        ...(baseWhere.AND || []),
+        { numberOfSignIns: { gt: 0 } },
+        { lastSignIn: { gte: sevenDaysAgo } }
+      ];
+    } else if (activity === 'inactive') {
+      baseWhere.AND = [
+        ...(baseWhere.AND || []),
+        { OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null }, { numberOfSignIns: 0 } ] }
+      ];
+    }
+
+    const BATCH_SIZE = 500;
+
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="users_${activity}_${Date.now()}.csv"`);
+      // CSV header
+      res.write('Full Name,Email,Role,Time Spent (minutes),Documents Viewed,Total Sign-ins,Last Sign-in,Days Inactive,Account Created,Status\n');
+      let cursor: string | undefined = undefined;
+      for (;;) {
+        const users: any[] = await prisma.user.findMany({
+          where: baseWhere,
+          select: {
+            id: true, fullname: true, email: true, role: true, timeSpent: true, documentsViewed: true,
+            numberOfSignIns: true, lastSignIn: true, createdAt: true
+          },
+          orderBy: { createdAt: 'asc' },
+          take: BATCH_SIZE + 1,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {})
+        });
+  const hasMore: boolean = users.length > BATCH_SIZE;
+  const batch: any[] = hasMore ? users.slice(0, BATCH_SIZE) : users;
+        for (const u of batch) {
+          const last = u.lastSignIn ? u.lastSignIn.toISOString() : 'Never';
+            const lastDate = u.lastSignIn ? new Date(u.lastSignIn) : null;
+            const daysInactive = lastDate ? Math.floor((now.getTime() - lastDate.getTime()) / (1000*60*60*24)) : 999;
+          const status = (u.numberOfSignIns || 0) > 0 && daysInactive <= 7 ? 'Active' : 'Inactive';
+          const row = [
+            escapeCsv(u.fullname),
+            escapeCsv(u.email),
+            escapeCsv(u.role),
+            String(u.timeSpent),
+            String(u.documentsViewed),
+            String(u.numberOfSignIns),
+            last,
+            String(daysInactive),
+            u.createdAt.toISOString(),
+            status
+          ].join(',') + '\n';
+          res.write(row);
+        }
+        if (!hasMore) break;
+        cursor = batch[batch.length - 1].id;
+      }
+      return res.end();
+    } else if (format === 'xlsx') {
+      // Lazy import xlsx only if needed
+      const xlsx = await import('xlsx');
+      const rows: any[] = [];
+      let cursor: string | undefined = undefined;
+      for (;;) {
+        const users: any[] = await prisma.user.findMany({
+          where: baseWhere,
+          select: {
+            id: true, fullname: true, email: true, role: true, timeSpent: true, documentsViewed: true,
+            numberOfSignIns: true, lastSignIn: true, createdAt: true
+          },
+          orderBy: { createdAt: 'asc' },
+          take: BATCH_SIZE + 1,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {})
+        });
+  const hasMore: boolean = users.length > BATCH_SIZE;
+  const batch: any[] = hasMore ? users.slice(0, BATCH_SIZE) : users;
+        for (const u of batch) {
+          const lastDate = u.lastSignIn ? new Date(u.lastSignIn) : null;
+          const daysInactive = lastDate ? Math.floor((now.getTime() - lastDate.getTime()) / (1000*60*60*24)) : 999;
+          rows.push({
+            'Full Name': u.fullname,
+            'Email': u.email,
+            'Role': u.role,
+            'Time Spent (minutes)': u.timeSpent,
+            'Documents Viewed': u.documentsViewed,
+            'Total Sign-ins': u.numberOfSignIns,
+            'Last Sign-in': u.lastSignIn ? u.lastSignIn.toISOString() : 'Never',
+            'Days Inactive': daysInactive,
+            'Account Created': u.createdAt.toISOString(),
+            'Status': (u.numberOfSignIns || 0) > 0 && daysInactive <= 7 ? 'Active' : 'Inactive'
+          });
+        }
+        if (!hasMore) break;
+        cursor = batch[batch.length - 1].id;
+      }
+      const wb = xlsx.utils.book_new();
+      const ws = xlsx.utils.json_to_sheet(rows);
+      xlsx.utils.book_append_sheet(wb, ws, 'Users');
+      const buf = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="users_${activity}_${Date.now()}.xlsx"`);
+      return res.end(buf);
+    } else {
+      return res.status(400).json({ error: 'Unsupported format' });
+    }
+  } catch (err: any) {
+    console.error('Export error:', err);
+    return res.status(500).json({ error: 'Failed to export users' });
+  }
+});
+
+// Helper to escape CSV values (basic)
+function escapeCsv(val: any): string {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  if (/[",\n]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
 // (Legacy inline bookmark endpoints removed; handled earlier in file / dedicated router)
 
 export default router;
