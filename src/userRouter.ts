@@ -1171,9 +1171,10 @@ router.get("/admin/users-metrics", async (req, res) => {
         { lastSignIn: { gte: sevenDaysAgo } }
       ];
     } else if (activity === 'inactive') {
+      // Align inactive definition with export endpoint: lastSignIn older than 7 days OR null OR never signed in
       where.AND = [
         ...(where.AND || []),
-        { OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null } ] }
+        { OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null }, { numberOfSignIns: 0 } ] }
       ];
     } else if (activity === 'never') {
       where.AND = [
