@@ -49,8 +49,10 @@ export async function getSignedDownloadUrl(path: string): Promise<string> {
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 }
 
-export async function getSignedUploadUrl(path: string): Promise<string> {
-    let command = new PutObjectCommand({ Bucket: bucket, Key: path });
+export async function getSignedUploadUrl(path: string, contentType?: string): Promise<string> {
+    const params: any = { Bucket: bucket, Key: path };
+    if (contentType) params.ContentType = contentType;
+    const command = new PutObjectCommand(params);
     return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 }
 

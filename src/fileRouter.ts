@@ -110,10 +110,11 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const key = decodeURIComponent(req.body.key);
-      const url = await getSignedUploadUrl(key);
+      const contentType = req.body.contentType && typeof req.body.contentType === 'string' ? req.body.contentType : undefined;
+      const url = await getSignedUploadUrl(key, contentType);
       res.json({ url });
     } catch (err) {
-      console.error(err);
+      console.error('Error generating upload URL:', err);
       res.status(500).json({ error: "Failed to generate signed URL" });
     }
   }
