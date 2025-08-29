@@ -106,8 +106,8 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
             await prisma.user.create({
               data: {
                 fullname,
-                email,
-                password: adId, // stored as-is per existing logic
+                email: email.toLowerCase(),
+                password: adId, // initial AD ID plain (legacy); will be migrated to hash on first login
                 role: 'user'
               }
             });

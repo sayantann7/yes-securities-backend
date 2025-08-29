@@ -61,7 +61,7 @@ router.post("/signin", async (req: Request, res: Response) => {
       },
       select: {
         id: true, email: true, fullname: true, role: true, createdAt: true, lastSignIn: true,
-        numberOfSignIns: true, timeSpent: true, documentsViewed: true, recentDocs: true
+        numberOfSignIns: true, timeSpent: true, documentsViewed: true, recentDocs: true, mustChangePassword: true
       }
     });
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET as string, { expiresIn: '24h' });
@@ -78,7 +78,8 @@ router.post("/signin", async (req: Request, res: Response) => {
         numberOfSignIns: updatedUser.numberOfSignIns,
         timeSpent: updatedUser.timeSpent,
         documentsViewed: updatedUser.documentsViewed,
-  recentDocs: updatedUser.recentDocs
+  recentDocs: updatedUser.recentDocs,
+  mustChangePassword: updatedUser.mustChangePassword
       }
     });
   } catch (err) {
