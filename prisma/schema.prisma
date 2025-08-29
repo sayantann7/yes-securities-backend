@@ -23,6 +23,9 @@ model User {
   lastSignIn      DateTime? @default(now())
   timeSpent       Int       @default(0)
   documentsViewed Int       @default(0)
+  failedLoginAttempts Int    @default(0)
+  lockUntil        DateTime?
+  mustChangePassword Boolean @default(true)
 }
 
 model Comment {

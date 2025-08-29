@@ -7,6 +7,8 @@ import userRouter from "./userRouter";
 import adminRouter from "./adminRouter";
 import bookmarkRouter from "./bookmarkRouterOptimized";
 import cors from "cors";
+import helmet from "helmet";
+import crypto from 'crypto';
 import { prisma } from "./prisma";
 
 // --------------------------------------------------
@@ -94,7 +96,38 @@ process.on("unhandledRejection", (reason: any, promise) => {
 });
 
 app.use(express.json({ limit: '5mb' }));
-app.use(cors());
+
+// CORS: restrict to known frontends
+const allowedOrigins = (process.env.CORS_ORIGINS || 'https://ysl-sales-repo.sayantan.space,https://app.your-mobile-domain.com')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
+
+// Security headers via helmet plus custom strict policies
+app.use(helmet({
+  referrerPolicy: { policy: 'no-referrer' },
+  contentSecurityPolicy: false // can be customized later
+}));
+app.use((_req, res, next) => {
+  res.setHeader('X-Frame-Options','DENY');
+  res.setHeader('X-Content-Type-Options','nosniff');
+  res.setHeader('X-XSS-Protection','0');
+  res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy','same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy','same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy','require-corp');
+  next();
+});
 
 // Basic health endpoint
 app.get('/health', async (_req, res) => {

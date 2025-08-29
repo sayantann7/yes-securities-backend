@@ -10,41 +10,63 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // @ts-ignore
 router.post("/signin", async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
+    const { email, password } = req.body || {};
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Invalid payload' });
     }
-
-    const user = await prisma.user.findUnique({
-      where: { email: String(email) },
-    });
-
-    if (!user || user.password !== String(password)) {
-      return res.status(401).json({ error: "Invalid credentials" });
+    const trimmedEmail = email.trim().toLowerCase();
+    const pwd = password;
+    const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    if (!emailRegex.test(trimmedEmail) || pwd.length < 1) { // allow initial short numeric AD ID passwords
+      return res.status(400).json({ error: 'Invalid email or password format' });
     }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { 
-        userId: user.id,
-        email: user.email
-      },
-      //@ts-ignore
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
+    const user = await prisma.user.findUnique({ where: { email: trimmedEmail } });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    // Account lock check
+    if (user.lockUntil && user.lockUntil > new Date()) {
+      return res.status(423).json({ error: 'Account locked. Try again later.' });
+    }
+    // Compare password (hashing). If passwords not yet hashed (legacy), detect and migrate.
+    const bcrypt = require('bcrypt');
+    let passwordMatches = false;
+    if (user.password.startsWith('$2')) {
+      passwordMatches = await bcrypt.compare(pwd, user.password);
+    } else {
+      // Legacy plain password match then re-hash
+      if (user.password === pwd) {
+        passwordMatches = true;
+        const newHash = await bcrypt.hash(pwd, 12);
+        await prisma.user.update({ where: { id: user.id }, data: { password: newHash } });
+      }
+    }
+    if (!passwordMatches) {
+      const attempts = (user.failedLoginAttempts || 0) + 1;
+      let lockUntil: Date | undefined = undefined;
+      if (attempts >= 5) { // threshold
+        lockUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
+      }
+      await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: attempts, lockUntil } });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    // Reset failed attempts
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: {
         lastSignIn: new Date(),
         numberOfSignIns: user.numberOfSignIns + 1,
+        failedLoginAttempts: 0,
+        lockUntil: null
       },
+      select: {
+        id: true, email: true, fullname: true, role: true, createdAt: true, lastSignIn: true,
+        numberOfSignIns: true, timeSpent: true, documentsViewed: true, recentDocs: true
+      }
     });
-
-    res.json({ 
-      message: "Sign in successful", 
+    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET as string, { expiresIn: '24h' });
+    res.json({
+      message: 'Sign in successful',
       token,
       user: {
         id: updatedUser.id,
@@ -54,14 +76,14 @@ router.post("/signin", async (req: Request, res: Response) => {
         createdAt: updatedUser.createdAt,
         lastSignIn: updatedUser.lastSignIn,
         numberOfSignIns: updatedUser.numberOfSignIns,
-        timeSpent : updatedUser.timeSpent,
+        timeSpent: updatedUser.timeSpent,
         documentsViewed: updatedUser.documentsViewed,
-        recentDocs: updatedUser.recentDocs
+  recentDocs: updatedUser.recentDocs
       }
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to sign in" });
+    res.status(500).json({ error: 'Failed to sign in' });
   }
 });
 
@@ -178,41 +200,34 @@ router.post("/updateTime", async (req: Request, res: Response) => {
 // @ts-ignore
 router.put("/changePassword", async (req: Request, res: Response) => {
   try {
-    const { email, currentPassword, newPassword } = req.body;
-
-    if (!email || !currentPassword || !newPassword) {
-      return res.status(400).json({ error: "Email, current password, and new password are required" });
+    const { email, currentPassword, newPassword } = req.body || {};
+    if (typeof email !== 'string' || typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'Invalid payload' });
     }
-
-    const user = await prisma.user.findUnique({
-      where: { email: String(email) },
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+    const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const bcrypt = require('bcrypt');
+    let matches = false;
+    if (user.password.startsWith('$2')) {
+      matches = await bcrypt.compare(currentPassword, user.password);
+    } else if (user.password === currentPassword) {
+      matches = true;
+      // migrate old hash
+      const migrated = await bcrypt.hash(currentPassword, 12);
+      await prisma.user.update({ where: { id: user.id }, data: { password: migrated } });
     }
-
-    // Check if current password is correct
-    if (user.password !== String(currentPassword)) {
-      return res.status(401).json({ error: "Current password is incorrect" });
+    if (!matches) return res.status(401).json({ error: 'Current password is incorrect' });
+    // Strong password policy: 12+ chars, upper, lower, number, symbol
+    const policy = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/; // reduced to 6+ chars per new requirement
+    if (!policy.test(newPassword)) {
+      return res.status(400).json({ error: 'Password must be 6+ chars incl upper, lower, number & symbol' });
     }
-
-    // Update password (store directly without hashing since we're not using bcrypt)
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        password: String(newPassword),
-        updatedAt: new Date(),
-      },
-    });
-
-    res.json({ 
-      message: "Password updated successfully"
-    });
-
+    const newHash = await bcrypt.hash(newPassword, 12);
+  await prisma.user.update({ where: { id: user.id }, data: { password: newHash, updatedAt: new Date() } });
+  res.json({ message: 'Password updated successfully' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to update password" });
+    res.status(500).json({ error: 'Failed to update password' });
   }
 });
 
