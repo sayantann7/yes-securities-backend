@@ -259,11 +259,18 @@ export async function deleteFolder(prefix: string): Promise<void> {
  */
 export async function uploadCustomIcon(itemPath: string, iconType: string): Promise<string> {
     try {
-    // Normalize path: remove trailing slashes for stable key generation
-    const normalizedPath = itemPath.replace(/\/+$/, '');
-    // Base (extension-agnostic) sanitized segment
-    const baseSanitized = normalizedPath.replace(/[^a-zA-Z0-9]/g, '_') + '_icon';
-        const baseKeyPrefix = `icons/${baseSanitized}`; // without extension
+        // Helper: sanitize path consistently (remove trailing slashes, collapse underscores)
+        const sanitize = (p: string) => {
+            const trimmed = p.replace(/\/+$/, '');
+            let cleaned = trimmed.replace(/[^a-zA-Z0-9]/g, '_');
+            cleaned = cleaned.replace(/_+/g, '_'); // collapse multiple underscores
+            cleaned = cleaned.replace(/^_+|_+$/g, ''); // trim edge underscores
+            return cleaned;
+        };
+
+        const normalizedPath = itemPath.replace(/\/+$/, '');
+        const sanitized = sanitize(itemPath);
+        const baseKeyPrefix = `icons/${sanitized}_icon`;
 
         console.log('uploadCustomIcon Debug (pre-clean):', {
             originalPath: itemPath,
@@ -271,57 +278,43 @@ export async function uploadCustomIcon(itemPath: string, iconType: string): Prom
             baseKeyPrefix
         });
 
-        // 1. List any existing icons for this item (any extension) and delete them so replacement works
+        // 1. Delete any existing icon objects (covering legacy naming variants)
         try {
-            const listExisting = await s3Client.send(new ListObjectsV2Command({
-                Bucket: bucket,
-                Prefix: baseKeyPrefix
-            }));
-            if (listExisting.Contents && listExisting.Contents.length > 0) {
-                console.log(`Found ${listExisting.Contents.length} existing icon object(s) to delete for`, baseKeyPrefix);
-                for (const obj of listExisting.Contents) {
-                    if (obj.Key) {
-                        try {
-                            await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
-                            console.log('Deleted old icon object:', obj.Key);
-                        } catch (delErr) {
-                            console.warn('Failed to delete old icon object (continuing):', obj.Key, delErr);
-                        }
-                    }
-                }
-            } else {
-                console.log('No previous icon objects found for', baseKeyPrefix);
-            }
-            // Legacy cleanup: if an icon was created with trailing slash variant (double underscore case), attempt delete
-            if (normalizedPath !== itemPath) {
-                const legacyPrefix = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
-                if (legacyPrefix !== baseKeyPrefix) {
-                    try {
-                        const legacyList = await s3Client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: legacyPrefix }));
-                        if (legacyList.Contents) {
-                            for (const obj of legacyList.Contents) {
-                                if (obj.Key) {
-                                    try {
-                                        await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
-                                        console.log('Deleted legacy icon object:', obj.Key);
-                                    } catch (legacyDelErr) {
-                                        console.warn('Failed deleting legacy icon object (continuing):', obj.Key, legacyDelErr);
-                                    }
+            const candidatePrefixes = new Set<string>();
+            candidatePrefixes.add(baseKeyPrefix);
+            // Legacy raw sanitize variants
+            const legacyRaw = itemPath.replace(/[^a-zA-Z0-9]/g, '_') + '_icon';
+            candidatePrefixes.add(`icons/${legacyRaw}`);
+            const legacyNoTrail = normalizedPath.replace(/[^a-zA-Z0-9]/g, '_') + '_icon';
+            candidatePrefixes.add(`icons/${legacyNoTrail}`);
+
+            for (const prefix of candidatePrefixes) {
+                try {
+                    const listExisting = await s3Client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
+                    if (listExisting.Contents && listExisting.Contents.length > 0) {
+                        console.log(`Found ${listExisting.Contents.length} existing icon object(s) under prefix ${prefix}, deleting...`);
+                        for (const obj of listExisting.Contents) {
+                            if (obj.Key) {
+                                try {
+                                    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
+                                    console.log('Deleted old/legacy icon object:', obj.Key);
+                                } catch (delErr) {
+                                    console.warn('Failed deleting icon object (continuing):', obj.Key, delErr);
                                 }
                             }
                         }
-                    } catch (legacyErr) {
-                        console.warn('Legacy icon list failed (continuing):', legacyErr);
                     }
+                } catch (listErr) {
+                    console.warn('Listing prefix failed (continuing):', prefix, listErr);
                 }
             }
-        } catch (listErr) {
-            console.warn('Could not list previous icons (continuing):', listErr);
+        } catch (aggregateErr) {
+            console.warn('Aggregate deletion phase encountered issues (continuing):', aggregateErr);
         }
 
         // 2. Build new key with requested extension
-        const normalizedExt = iconType.replace(/^\./, '').toLowerCase();
-        const iconKey = `${baseKeyPrefix}.${normalizedExt}`;
+    const normalizedExt = iconType.replace(/^\./, '').toLowerCase();
+    const iconKey = `${baseKeyPrefix}.${normalizedExt}`;
 
         console.log('uploadCustomIcon Debug (after clean):', {
             uploadKey: iconKey
@@ -348,8 +341,15 @@ export async function uploadCustomIcon(itemPath: string, iconType: string): Prom
  */
 export async function getCustomIconUrl(itemPath: string): Promise<string | null> {
     try {
-    const normalizedPath = itemPath.replace(/\/+$/, '');
-    const iconKey = `icons/${normalizedPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
+        const sanitize = (p: string) => {
+            const trimmed = p.replace(/\/+$/, '');
+            let cleaned = trimmed.replace(/[^a-zA-Z0-9]/g, '_');
+            cleaned = cleaned.replace(/_+/g, '_');
+            cleaned = cleaned.replace(/^_+|_+$/g, '');
+            return cleaned;
+        };
+        const normalizedPath = itemPath.replace(/\/+$/, '');
+        const iconKey = `icons/${sanitize(itemPath)}_icon`;
         
         console.log('getCustomIconUrl Debug:', {
             originalPath: itemPath,
@@ -379,7 +379,7 @@ export async function getCustomIconUrl(itemPath: string): Promise<string | null>
         }
         
         // Legacy variant (with trailing slash producing double underscore) fallback
-        const legacyKey = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
+    const legacyKey = `icons/${itemPath.replace(/[^a-zA-Z0-9]/g, '_')}_icon`;
         if (legacyKey !== iconKey) {
             for (const ext of extensions) {
                 try {
