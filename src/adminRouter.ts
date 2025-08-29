@@ -30,16 +30,47 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       });
 
       // Normalize records with flexible header names (case / dash variants)
-      const normalized = uploadedEmployees.map(row => {
+      // Determine header row & map column letters to header names for direct cell access
+      const sheetRange = xlsx.utils.decode_range(sheet['!ref'] as string);
+      const headerRowIndex = sheetRange.s.r; // usually 0
+      const headerMap: Record<string,string> = {}; // lowercased header name -> column letter
+      for (let c = sheetRange.s.c; c <= sheetRange.e.c; c++) {
+        const addr = xlsx.utils.encode_cell({ r: headerRowIndex, c });
+        const cell = sheet[addr];
+        if (!cell) continue;
+        const headerName = String(cell.v || '').trim().toLowerCase();
+        if (headerName) {
+          const colLetter = addr.replace(/\d+/g,'');
+          headerMap[headerName] = colLetter;
+        }
+      }
+      const adIdHeaderCandidates = ['ad-id','adid','ad id','ad_id','adid'];
+      const adIdColumnLetter = adIdHeaderCandidates.map(h=>headerMap[h]).find(Boolean);
+
+      const normalized = uploadedEmployees.map((row, idx) => {
         const emailRaw = row.email ?? row.Email ?? row['E-mail'] ?? row['e-mail'] ?? row['EMAIL'];
         const fullnameRaw = row.fullname ?? row['full name'] ?? row['Full Name'] ?? row['Full_Name'] ?? row['FULLNAME'] ?? row['name'] ?? row['Name'];
-        const adIdRaw = row['ad-id'] ?? row['AD-ID'] ?? row['adid'] ?? row['ADID'] ?? row['AdId'] ?? row['Ad-ID'];
+        let adIdRaw = row['ad-id'] ?? row['AD-ID'] ?? row['adid'] ?? row['ADID'] ?? row['AdId'] ?? row['Ad-ID'];
+        // Attempt to recover leading zeros using the raw cell text (formatted) if column identified
+        if (adIdColumnLetter) {
+          const sheetRowNumber = headerRowIndex + 1 + idx + 1; // +1 to move past header, +1 because sheet rows are 1-based
+            const cellAddress = `${adIdColumnLetter}${sheetRowNumber}`;
+          const cellObj = sheet[cellAddress];
+          const rawText = cellObj?.w ?? cellObj?.v;
+          if (rawText !== undefined && rawText !== null) {
+            const rawStr = String(rawText).trim();
+            // Prefer formatted text if it preserves leading zeros
+            if (/^0+\d+$/.test(rawStr) || (typeof adIdRaw === 'number')) {
+              adIdRaw = rawStr; // keep leading zeros
+            }
+          }
+        }
         return {
           fullname: norm(fullnameRaw),
           email: norm(emailRaw),
-          adId: norm(adIdRaw)
+          adId: typeof adIdRaw === 'number' ? String(adIdRaw) : norm(adIdRaw)
         };
-      }).filter(r => r.email); // drop rows without any email value
+      }).filter(r => r.email);
 
       // Get all current non-admin users from the database
       const currentUsers = await prisma.user.findMany({
@@ -91,7 +122,8 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
       for (const employee of normalized) {
         const email = norm(employee.email).toLowerCase();
         const fullname = norm(employee.fullname);
-        const adId = norm(employee.adId);
+  // Preserve leading zeros exactly for AD ID (only trim outer whitespace)
+  const adId = (employee.adId ?? '').toString().trim();
 
         if (!email) {
           results.errors.push('Missing email in uploaded file row');
@@ -107,7 +139,7 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
               data: {
                 fullname,
                 email: email.toLowerCase(),
-                password: adId, // initial AD ID plain (legacy); will be migrated to hash on first login
+                password: adId, // preserve leading zeros
                 role: 'user'
               }
             });
