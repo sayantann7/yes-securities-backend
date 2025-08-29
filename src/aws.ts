@@ -320,6 +320,18 @@ export async function uploadCustomIcon(itemPath: string, iconType: string): Prom
             uploadKey: iconKey
         });
 
+        // 3a. Proactively delete any other extension variants (safety net if listing missed something)
+        const variantExtensions = ['png','jpg','jpeg','gif','webp'];
+        await Promise.all(variantExtensions.filter(ext => ext !== normalizedExt).map(async ext => {
+            const variantKey = `${baseKeyPrefix}.${ext}`;
+            try {
+                await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: variantKey }));
+                console.log('Deleted variant icon (safety net):', variantKey);
+            } catch (variantErr) {
+                // Ignore missing object errors
+            }
+        }));
+
         // 3. Generate signed URL for uploading the icon (replacement)
         const command = new PutObjectCommand({
             Bucket: bucket,
