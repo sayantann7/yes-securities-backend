@@ -259,89 +259,28 @@ export async function deleteFolder(prefix: string): Promise<void> {
  */
 export async function uploadCustomIcon(itemPath: string, iconType: string): Promise<string> {
     try {
-        // Helper: sanitize path consistently (remove trailing slashes, collapse underscores)
-        const sanitize = (p: string) => {
-            const trimmed = p.replace(/\/+$/, '');
-            let cleaned = trimmed.replace(/[^a-zA-Z0-9]/g, '_');
-            cleaned = cleaned.replace(/_+/g, '_'); // collapse multiple underscores
-            cleaned = cleaned.replace(/^_+|_+$/g, ''); // trim edge underscores
-            return cleaned;
-        };
-
-        const normalizedPath = itemPath.replace(/\/+$/, '');
-        const sanitized = sanitize(itemPath);
-        const baseKeyPrefix = `icons/${sanitized}_icon`;
-
-        console.log('uploadCustomIcon Debug (pre-clean):', {
-            originalPath: itemPath,
-            requestedExtension: iconType,
-            baseKeyPrefix
-        });
-
-        // 1. Delete any existing icon objects (covering legacy naming variants)
-        try {
-            const candidatePrefixes = new Set<string>();
-            candidatePrefixes.add(baseKeyPrefix);
-            // Legacy raw sanitize variants
-            const legacyRaw = itemPath.replace(/[^a-zA-Z0-9]/g, '_') + '_icon';
-            candidatePrefixes.add(`icons/${legacyRaw}`);
-            const legacyNoTrail = normalizedPath.replace(/[^a-zA-Z0-9]/g, '_') + '_icon';
-            candidatePrefixes.add(`icons/${legacyNoTrail}`);
-
-            for (const prefix of candidatePrefixes) {
-                try {
-                    const listExisting = await s3Client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
-                    if (listExisting.Contents && listExisting.Contents.length > 0) {
-                        console.log(`Found ${listExisting.Contents.length} existing icon object(s) under prefix ${prefix}, deleting...`);
-                        for (const obj of listExisting.Contents) {
-                            if (obj.Key) {
-                                try {
-                                    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
-                                    console.log('Deleted old/legacy icon object:', obj.Key);
-                                } catch (delErr) {
-                                    console.warn('Failed deleting icon object (continuing):', obj.Key, delErr);
-                                }
-                            }
-                        }
-                    }
-                } catch (listErr) {
-                    console.warn('Listing prefix failed (continuing):', prefix, listErr);
+        const trimmed = itemPath.replace(/\/+$/, '');
+        const sanitized = trimmed.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g,'');
+        const base = `icons/${sanitized}_icon`;
+        const existingExts = ['png','jpg','jpeg','gif','webp'];
+        // Check existence (add-only)
+        for (const ext of existingExts) {
+            const key = `${base}.${ext}`;
+            try {
+                await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+                console.log('Icon already exists, rejecting add request:', key);
+                throw new Error('ICON_EXISTS');
+            } catch (e:any) {
+                // If not found, continue; other errors propagate
+                if (e?.$metadata?.httpStatusCode && e.$metadata.httpStatusCode !== 404) {
+                    // non 404 error while checking; proceed to next check
                 }
             }
-        } catch (aggregateErr) {
-            console.warn('Aggregate deletion phase encountered issues (continuing):', aggregateErr);
         }
-
-        // 2. Build new key with requested extension
-    const normalizedExt = iconType.replace(/^\./, '').toLowerCase();
-    const iconKey = `${baseKeyPrefix}.${normalizedExt}`;
-
-        console.log('uploadCustomIcon Debug (after clean):', {
-            uploadKey: iconKey
-        });
-
-        // 3a. Proactively delete any other extension variants (safety net if listing missed something)
-        const variantExtensions = ['png','jpg','jpeg','gif','webp'];
-        await Promise.all(variantExtensions.filter(ext => ext !== normalizedExt).map(async ext => {
-            const variantKey = `${baseKeyPrefix}.${ext}`;
-            try {
-                await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: variantKey }));
-                console.log('Deleted variant icon (safety net):', variantKey);
-            } catch (variantErr) {
-                // Ignore missing object errors
-            }
-        }));
-
-        // 3. Generate signed URL for uploading the icon (replacement)
-        const command = new PutObjectCommand({
-            Bucket: bucket,
-            Key: iconKey,
-            ContentType: `image/${normalizedExt}`
-        });
-
-        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
-        console.log('Generated signed URL for new icon upload:', signedUrl);
-        return signedUrl;
+        const ext = iconType.replace(/^\./,'').toLowerCase();
+        const iconKey = `${base}.${ext}`;
+        const command = new PutObjectCommand({ Bucket: bucket, Key: iconKey, ContentType: `image/${ext}` });
+        return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
     } catch (err) {
         console.error('Error generating icon upload URL:', err);
         throw new Error('Failed to generate icon upload URL');

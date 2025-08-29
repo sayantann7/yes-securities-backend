@@ -224,16 +224,17 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
 router.post('/icons/upload', async (req: Request, res: Response) => {
   try {
     const { itemPath, iconType = 'jpeg' } = req.body;
-    
     if (!itemPath) {
       return res.status(400).json({ error: 'Item path is required' });
     }
-    
     const uploadUrl = await uploadCustomIcon(itemPath, iconType);
-    res.json({ uploadUrl });
-  } catch (err) {
+    return res.json({ uploadUrl });
+  } catch (err: any) {
+    if (err?.message === 'ICON_EXISTS') {
+      return res.status(409).json({ error: 'Icon already exists for this folder' });
+    }
     console.error('Error uploading icon:', err);
-    res.status(500).json({ error: 'Failed to upload custom icon' });
+    return res.status(500).json({ error: 'Failed to upload custom icon' });
   }
 });
 
