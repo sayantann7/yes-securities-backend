@@ -98,7 +98,7 @@ process.on("unhandledRejection", (reason: any, promise) => {
 app.use(express.json({ limit: '5mb' }));
 
 // CORS: restrict to known frontends
-const allowedOrigins = (process.env.CORS_ORIGINS || 'https://ysl-sales-repo.sayantan.space,https://app.your-mobile-domain.com')
+const allowedOrigins = (process.env.CORS_ORIGINS || 'https://ysl-admin.sayantan.space')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
