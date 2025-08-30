@@ -73,4 +73,10 @@ router.post("/bookmarks/admin/cleanup-all", asyncHandler(async (req, res) => {
   await BookmarkService.cleanupAllBookmarks(req, res);
 }));
 
+// Manual cleanup endpoint for current user
+// @ts-ignore
+router.post("/bookmarks/cleanup", asyncHandler(async (req, res) => {
+  await BookmarkService.manualCleanup(req, res);
+}));
+
 export default router;

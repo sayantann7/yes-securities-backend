@@ -122,6 +122,14 @@ export class BookmarkService {
    */
   private static async validateBookmarkExists(itemId: string, itemType: string): Promise<boolean> {
     try {
+      console.log(`🔍 Validating bookmark: ${itemType} ${itemId}`);
+      
+      // Check if S3 client and bucket are properly configured
+      if (!bucket) {
+        console.error('❌ S3_BUCKET_NAME environment variable not set');
+        return false;
+      }
+      
       // Normalize the itemId to ensure proper S3 key format
       let normalizedKey = itemId;
       
@@ -139,28 +147,36 @@ export class BookmarkService {
         }
       }
 
+      console.log(`🔍 Normalized key: ${normalizedKey}`);
+
       if (itemType === 'document') {
         // For files, use HEAD request to check if file exists
+        console.log(`🔍 Checking file existence: ${normalizedKey}`);
         await s3Client.send(new HeadObjectCommand({ 
           Bucket: bucket, 
           Key: normalizedKey 
         }));
+        console.log(`✅ File exists: ${normalizedKey}`);
         return true;
       } else if (itemType === 'folder') {
         // For folders, use LIST request to check if folder exists and has contents
+        console.log(`🔍 Checking folder existence: ${normalizedKey}`);
         const response = await s3Client.send(new ListObjectsV2Command({
           Bucket: bucket,
           Prefix: normalizedKey,
           MaxKeys: 1
         }));
         // Folder exists if it has at least one object (including the folder marker)
-        return Boolean(response.Contents && response.Contents.length > 0);
+        const exists = Boolean(response.Contents && response.Contents.length > 0);
+        console.log(`✅ Folder ${exists ? 'exists' : 'does not exist'}: ${normalizedKey} (${response.Contents?.length || 0} objects)`);
+        return exists;
       }
       
+      console.log(`❌ Unknown item type: ${itemType}`);
       return false;
     } catch (error: any) {
       // If HEAD or LIST request fails, item doesn't exist
-      console.log(`Bookmark validation failed for ${itemType} ${itemId}:`, error.message);
+      console.log(`❌ Bookmark validation failed for ${itemType} ${itemId}:`, error.message);
       return false;
     }
   }
@@ -170,6 +186,7 @@ export class BookmarkService {
    */
   private static async cleanupInvalidBookmarks(userId: string, bookmarks: any[]): Promise<{ validBookmarks: any[], removedCount: number }> {
     if (bookmarks.length === 0) {
+      console.log('📋 No bookmarks to validate');
       return { validBookmarks: [], removedCount: 0 };
     }
 
@@ -181,27 +198,34 @@ export class BookmarkService {
 
     // Validate bookmarks concurrently with a reasonable limit
     const validationPromises = bookmarks.map(async (bookmark) => {
-      const exists = await this.validateBookmarkExists(bookmark.itemId, bookmark.itemType);
-      return { bookmark, exists };
+      try {
+        const exists = await this.validateBookmarkExists(bookmark.itemId, bookmark.itemType);
+        return { bookmark, exists, error: null };
+      } catch (error) {
+        console.error(`❌ Error validating bookmark ${bookmark.id}:`, error);
+        return { bookmark, exists: false, error };
+      }
     });
 
     const validationResults = await Promise.allSettled(validationPromises);
     
     for (const result of validationResults) {
       if (result.status === 'fulfilled') {
-        const { bookmark, exists } = result.value;
+        const { bookmark, exists, error } = result.value;
         if (exists) {
           validBookmarks.push(bookmark);
+          console.log(`✅ Valid bookmark: ${bookmark.itemType} ${bookmark.itemId}`);
         } else {
           invalidBookmarkIds.push(bookmark.id);
-          console.log(`🗑️ Removing invalid bookmark: ${bookmark.itemType} ${bookmark.itemId}`);
+          console.log(`🗑️ Removing invalid bookmark: ${bookmark.itemType} ${bookmark.itemId}${error ? ` (error: ${error})` : ''}`);
         }
       } else {
         // If validation failed, assume bookmark is invalid
-        console.error('Bookmark validation error:', result.reason);
+        console.error('❌ Bookmark validation error:', result.reason);
         const bookmark = bookmarks[validationResults.indexOf(result)];
         if (bookmark) {
           invalidBookmarkIds.push(bookmark.id);
+          console.log(`🗑️ Removing bookmark due to validation error: ${bookmark.itemType} ${bookmark.itemId}`);
         }
       }
     }
@@ -209,6 +233,7 @@ export class BookmarkService {
     // Remove invalid bookmarks from database
     if (invalidBookmarkIds.length > 0) {
       try {
+        console.log(`🗑️ Removing ${invalidBookmarkIds.length} invalid bookmarks from database...`);
         const deleteResult = await prisma.bookmark.deleteMany({
           where: {
             id: { in: invalidBookmarkIds },
@@ -218,8 +243,10 @@ export class BookmarkService {
         removedCount = deleteResult.count;
         console.log(`✅ Removed ${removedCount} invalid bookmarks from database`);
       } catch (error) {
-        console.error('Failed to remove invalid bookmarks from database:', error);
+        console.error('❌ Failed to remove invalid bookmarks from database:', error);
       }
+    } else {
+      console.log('✅ No invalid bookmarks found');
     }
 
     return { validBookmarks, removedCount };
@@ -236,7 +263,21 @@ export class BookmarkService {
     const cached = bookmarkCache.get(cacheKey);
     if (cached && (now - cached.timestamp) < BOOKMARK_CACHE_TTL) {
       metrics.cacheHits++;
-      return cached.data;
+      // Even if cached, still run cleanup to ensure fresh data
+      console.log('📋 Using cached bookmarks, but running cleanup for fresh data');
+      const { validBookmarks, removedCount } = await this.cleanupInvalidBookmarks(userId, cached.data);
+      
+      // Update cache with cleaned data
+      bookmarkCache.set(cacheKey, {
+        data: validBookmarks,
+        timestamp: now
+      });
+      
+      if (removedCount > 0) {
+        console.log(`🧹 Cleaned up ${removedCount} invalid bookmarks from cache`);
+      }
+      
+      return validBookmarks;
     }
     
     metrics.cacheMisses++;
@@ -423,12 +464,10 @@ export class BookmarkService {
       
       try {
         // Check if bookmark already exists
-        const existingBookmark = await prisma.bookmark.findUnique({
+        const existingBookmark = await prisma.bookmark.findFirst({
           where: {
-            userId_itemId: {
-              userId,
-              itemId: sanitizedItemId
-            }
+            userId,
+            itemId: sanitizedItemId
           }
         });
         
@@ -520,13 +559,11 @@ export class BookmarkService {
       
       try {
         // Delete bookmark with transaction
-        const deletedBookmark = await prisma.$transaction(async (tx) => {
-          return tx.bookmark.delete({
+        const deleteResult = await prisma.$transaction(async (tx) => {
+          return tx.bookmark.deleteMany({
             where: {
-              userId_itemId: {
-                userId,
-                itemId: sanitizedItemId
-              }
+              userId,
+              itemId: sanitizedItemId
             }
           });
         });
@@ -534,14 +571,17 @@ export class BookmarkService {
         // Clear cache to ensure fresh data
         this.clearUserCache(userId);
         
+        if (deleteResult.count === 0) {
+          console.log('❌ No bookmark found to delete');
+          res.status(404).json({ error: "Bookmark not found" });
+          return;
+        }
+        
         console.log('✅ Bookmark deleted successfully');
         res.json({ 
           message: "Bookmark removed successfully",
-          deletedBookmark: {
-            id: deletedBookmark.id,
-            itemId: deletedBookmark.itemId,
-            itemName: deletedBookmark.itemName
-          }
+          deletedCount: deleteResult.count,
+          itemId: sanitizedItemId
         });
         
       } catch (dbError: any) {
@@ -761,45 +801,61 @@ export class BookmarkService {
                   continue;
                 }
                 
-                const bookmark = await tx.bookmark.upsert({
+                // Check if bookmark exists first
+                const existingBookmark = await tx.bookmark.findFirst({
                   where: {
-                    userId_itemId: {
-                      userId,
-                      itemId: operation.itemId
-                    }
-                  },
-                  update: {
-                    itemName: operation.itemName,
-                    itemType: operation.itemType
-                  },
-                  create: {
                     userId,
-                    itemId: operation.itemId,
-                    itemType: operation.itemType,
-                    itemName: operation.itemName
+                    itemId: operation.itemId
                   }
                 });
+                
+                let bookmark;
+                if (existingBookmark) {
+                  // Update existing bookmark
+                  bookmark = await tx.bookmark.update({
+                    where: { id: existingBookmark.id },
+                    data: {
+                      itemName: operation.itemName,
+                      itemType: operation.itemType
+                    }
+                  });
+                } else {
+                  // Create new bookmark
+                  bookmark = await tx.bookmark.create({
+                    data: {
+                      userId,
+                      itemId: operation.itemId,
+                      itemType: operation.itemType,
+                      itemName: operation.itemName
+                    }
+                  });
+                }
                 
                 results.push({ index, action: 'create', bookmark });
                 
               } else if (operation.action === 'delete') {
                 try {
-                  const deleted = await tx.bookmark.delete({
+                  // Find bookmark first
+                  const existingBookmark = await tx.bookmark.findFirst({
                     where: {
-                      userId_itemId: {
-                        userId,
-                        itemId: operation.itemId
-                      }
+                      userId,
+                      itemId: operation.itemId
                     }
+                  });
+                  
+                  if (!existingBookmark) {
+                    errors.push({ index, error: 'Bookmark not found' });
+                    continue;
+                  }
+                  
+                  const deleted = await tx.bookmark.delete({
+                    where: { id: existingBookmark.id }
                   });
                   
                   results.push({ index, action: 'delete', deleted });
                 } catch (deleteError: any) {
-                  if (deleteError.code === 'P2025') {
-                    errors.push({ index, error: 'Bookmark not found' });
-                  } else {
-                    throw deleteError;
-                  }
+                  console.error(`Error deleting bookmark in bulk operation:`, deleteError);
+                  errors.push({ index, error: 'Failed to delete bookmark' });
                 }
               } else {
                 errors.push({ index, error: 'Invalid action. Must be create or delete' });
@@ -858,6 +914,75 @@ export class BookmarkService {
   static clearAllCaches(): void {
     bookmarkCache.clear();
     console.log('📧 All bookmark caches cleared');
+  }
+
+  /**
+   * Force cleanup bookmarks for a specific user (for debugging/admin use)
+   */
+  static async forceCleanupUserBookmarks(userId: string): Promise<{ validBookmarks: any[], removedCount: number }> {
+    try {
+      console.log(`🧹 Force cleanup for user ${userId}`);
+      
+      // Clear cache first
+      this.clearUserCache(userId);
+      
+      // Fetch all bookmarks for the user
+      const bookmarks = await prisma.bookmark.findMany({
+        where: { userId },
+        select: { id: true, itemId: true, itemType: true, itemName: true, createdAt: true }
+      });
+      
+      console.log(`📋 Found ${bookmarks.length} bookmarks to validate`);
+      
+      // Clean up invalid bookmarks
+      const result = await this.cleanupInvalidBookmarks(userId, bookmarks);
+      
+      // Cache the cleaned result
+      const cacheKey = `bookmarks_${userId}`;
+      bookmarkCache.set(cacheKey, {
+        data: result.validBookmarks,
+        timestamp: Date.now()
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('❌ Error in force cleanup:', error);
+      return { validBookmarks: [], removedCount: 0 };
+    }
+  }
+
+  /**
+   * Manual cleanup endpoint for current user
+   */
+  static async manualCleanup(req: Request, res: Response): Promise<void> {
+    try {
+      console.log('🧹 BookmarkService.manualCleanup called');
+      
+      // Extract and verify user ID
+      const authResult = this.extractUserId(req);
+      if (!authResult.success) {
+        console.error('Authentication failed:', authResult.error);
+        res.status(401).json({ error: authResult.error });
+        return;
+      }
+      
+      const userId = authResult.userId!;
+      
+      // Force cleanup for the user
+      const result = await this.forceCleanupUserBookmarks(userId);
+      
+      console.log(`✅ Manual cleanup completed: ${result.removedCount} bookmarks removed`);
+      res.json({
+        message: "Manual cleanup completed",
+        removedCount: result.removedCount,
+        validBookmarks: result.validBookmarks.length,
+        total: result.validBookmarks.length + result.removedCount
+      });
+      
+    } catch (error: any) {
+      console.error('Unexpected error in manualCleanup:', error);
+      res.status(500).json({ error: "Failed to perform manual cleanup" });
+    }
   }
 }
 

@@ -585,6 +585,12 @@ router.delete('/bookmarks/:itemId', async (req: Request, res: Response) => {
   await BookmarkService.deleteBookmark(req, res);
 });
 
+// Manual cleanup endpoint for current user
+// @ts-ignore
+router.post('/bookmarks/cleanup', async (req: Request, res: Response) => {
+  await BookmarkService.manualCleanup(req, res);
+});
+
 // @ts-ignore
 router.put("/comment", async (req: Request, res: Response) => {
   try{
