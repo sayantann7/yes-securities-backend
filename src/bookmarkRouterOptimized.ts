@@ -67,4 +67,10 @@ router.post("/bookmarks/admin/clear-cache", asyncHandler(async (req, res) => {
   });
 }));
 
+// Admin endpoint to cleanup invalid bookmarks for all users
+// @ts-ignore
+router.post("/bookmarks/admin/cleanup-all", asyncHandler(async (req, res) => {
+  await BookmarkService.cleanupAllBookmarks(req, res);
+}));
+
 export default router;

@@ -99,6 +99,32 @@ async function getCachedBookmarks(userId: string): Promise<any[]> {
     }
 }
 
+/**
+ * Remove bookmarks for a specific item (file or folder)
+ */
+async function removeBookmarksForItem(itemPath: string): Promise<number> {
+  try {
+    // Normalize the path to match how bookmarks are stored
+    const normalizedPath = itemPath.startsWith('/') ? itemPath : '/' + itemPath;
+    
+    // Remove bookmarks for this specific item
+    const deleteResult = await prisma.bookmark.deleteMany({
+      where: {
+        itemId: normalizedPath
+      }
+    });
+    
+    if (deleteResult.count > 0) {
+      console.log(`🗑️ Removed ${deleteResult.count} bookmarks for deleted item: ${itemPath}`);
+    }
+    
+    return deleteResult.count;
+  } catch (error) {
+    console.error('Error removing bookmarks for item:', error);
+    return 0;
+  }
+}
+
 // List with optional icons
 router.post(
   "/folders",
@@ -300,10 +326,17 @@ router.delete('/files/delete', async (req: Request, res: Response) => {
       }
     }
 
-    // Optional: clear bookmark cache since a document may be removed
+    // Remove bookmarks for the deleted file
+    const removedBookmarks = await removeBookmarksForItem(decoded);
+    
+    // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
 
-    res.json({ message: 'File delete attempted', attempts: Array.from(attempts) });
+    res.json({ 
+      message: 'File delete attempted', 
+      attempts: Array.from(attempts),
+      removedBookmarks
+    });
   } catch (err) {
     console.error('Error deleting file:', err);
     res.status(500).json({ error: 'Failed to delete file' });
@@ -374,9 +407,18 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
     if (!folderKey) { res.status(400).json({ error: 'Folder path or name is required' }); return; }
 
     await deleteFolderRecursively(folderKey);
+    
+    // Remove bookmarks for the deleted folder
+    const removedBookmarks = await removeBookmarksForItem(folderKey);
+    
+    // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
 
-    res.json({ message: 'Folder deleted', key: folderKey });
+    res.json({ 
+      message: 'Folder deleted', 
+      key: folderKey,
+      removedBookmarks
+    });
   } catch (err) {
     console.error('Error deleting folder:', err);
     res.status(500).json({ error: 'Failed to delete folder' });

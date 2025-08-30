@@ -1,8 +1,34 @@
 import { prisma } from "./prisma";
 import { Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import { HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { Agent as HttpAgent } from 'http';
+import { Agent as HttpsAgent } from 'https';
+require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+// Create S3 client for bookmark validation
+function clamp(n: number, min: number, max: number) { return Math.max(min, Math.min(max, n)); }
+const S3_CONN_TIMEOUT = clamp(parseInt(process.env.S3_CONN_TIMEOUT || '20000', 10), 5000, 60000);
+const S3_REQ_TIMEOUT = clamp(parseInt(process.env.S3_REQ_TIMEOUT || '45000', 10), 30000, 120000);
+const S3_MAX_ATTEMPTS = parseInt(process.env.S3_MAX_ATTEMPTS || '5', 10);
+
+const httpHandler = new NodeHttpHandler({
+    connectionTimeout: S3_CONN_TIMEOUT,
+    requestTimeout: S3_REQ_TIMEOUT,
+    httpAgent: new HttpAgent({ keepAlive: true, maxSockets: 64 }),
+    httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: 64 }),
+});
+
+const s3Client = new S3Client({ 
+    region: process.env.AWS_REGION || 'ap-south-1',
+    requestHandler: httpHandler,
+    maxAttempts: S3_MAX_ATTEMPTS,
+});
+
+const bucket = process.env.S3_BUCKET_NAME;
 
 // Cache for bookmark queries
 interface BookmarkCacheItem {
@@ -92,6 +118,114 @@ export class BookmarkService {
   }
 
   /**
+   * Validate if a bookmarked item still exists in S3
+   */
+  private static async validateBookmarkExists(itemId: string, itemType: string): Promise<boolean> {
+    try {
+      // Normalize the itemId to ensure proper S3 key format
+      let normalizedKey = itemId;
+      
+      // Ensure proper leading slash for content items
+      if (itemType === 'document' && !itemId.startsWith('/')) {
+        normalizedKey = '/' + itemId;
+      } else if (itemType === 'folder') {
+        // For folders, ensure it ends with slash
+        if (!itemId.endsWith('/')) {
+          normalizedKey = itemId + '/';
+        }
+        // Ensure proper leading slash
+        if (!itemId.startsWith('/')) {
+          normalizedKey = '/' + itemId;
+        }
+      }
+
+      if (itemType === 'document') {
+        // For files, use HEAD request to check if file exists
+        await s3Client.send(new HeadObjectCommand({ 
+          Bucket: bucket, 
+          Key: normalizedKey 
+        }));
+        return true;
+      } else if (itemType === 'folder') {
+        // For folders, use LIST request to check if folder exists and has contents
+        const response = await s3Client.send(new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: normalizedKey,
+          MaxKeys: 1
+        }));
+        // Folder exists if it has at least one object (including the folder marker)
+        return Boolean(response.Contents && response.Contents.length > 0);
+      }
+      
+      return false;
+    } catch (error: any) {
+      // If HEAD or LIST request fails, item doesn't exist
+      console.log(`Bookmark validation failed for ${itemType} ${itemId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Clean up invalid bookmarks (items that no longer exist in S3)
+   */
+  private static async cleanupInvalidBookmarks(userId: string, bookmarks: any[]): Promise<{ validBookmarks: any[], removedCount: number }> {
+    if (bookmarks.length === 0) {
+      return { validBookmarks: [], removedCount: 0 };
+    }
+
+    console.log(`🔍 Validating ${bookmarks.length} bookmarks for user ${userId}`);
+    
+    const validBookmarks: any[] = [];
+    const invalidBookmarkIds: string[] = [];
+    let removedCount = 0;
+
+    // Validate bookmarks concurrently with a reasonable limit
+    const validationPromises = bookmarks.map(async (bookmark) => {
+      const exists = await this.validateBookmarkExists(bookmark.itemId, bookmark.itemType);
+      return { bookmark, exists };
+    });
+
+    const validationResults = await Promise.allSettled(validationPromises);
+    
+    for (const result of validationResults) {
+      if (result.status === 'fulfilled') {
+        const { bookmark, exists } = result.value;
+        if (exists) {
+          validBookmarks.push(bookmark);
+        } else {
+          invalidBookmarkIds.push(bookmark.id);
+          console.log(`🗑️ Removing invalid bookmark: ${bookmark.itemType} ${bookmark.itemId}`);
+        }
+      } else {
+        // If validation failed, assume bookmark is invalid
+        console.error('Bookmark validation error:', result.reason);
+        const bookmark = bookmarks[validationResults.indexOf(result)];
+        if (bookmark) {
+          invalidBookmarkIds.push(bookmark.id);
+        }
+      }
+    }
+
+    // Remove invalid bookmarks from database
+    if (invalidBookmarkIds.length > 0) {
+      try {
+        const deleteResult = await prisma.bookmark.deleteMany({
+          where: {
+            id: { in: invalidBookmarkIds },
+            userId: userId
+          }
+        });
+        removedCount = deleteResult.count;
+        console.log(`✅ Removed ${removedCount} invalid bookmarks from database`);
+      } catch (error) {
+        console.error('Failed to remove invalid bookmarks from database:', error);
+      }
+    }
+
+    return { validBookmarks, removedCount };
+  }
+
+  /**
    * Get cached bookmarks or fetch from database
    */
   private static async getCachedBookmarks(userId: string): Promise<any[]> {
@@ -111,14 +245,21 @@ export class BookmarkService {
       // Fetch from database with retry logic
       const bookmarks = await this.fetchBookmarksWithRetry(userId);
       
-      // Cache the result
+      // Clean up invalid bookmarks before caching
+      const { validBookmarks, removedCount } = await this.cleanupInvalidBookmarks(userId, bookmarks);
+      
+      // Cache the cleaned result
       bookmarkCache.set(cacheKey, {
-        data: bookmarks,
+        data: validBookmarks,
         timestamp: now
       });
       enforceBookmarkCacheLimit();
       
-      return bookmarks;
+      if (removedCount > 0) {
+        console.log(`🧹 Cleaned up ${removedCount} invalid bookmarks for user ${userId}`);
+      }
+      
+      return validBookmarks;
       
     } catch (error) {
       console.error('Error fetching bookmarks from database:', error);
@@ -441,20 +582,117 @@ export class BookmarkService {
       const userId = authResult.userId!;
       console.log('Fetching bookmarks for userId:', userId);
       
-      // Get bookmarks with caching
+      // Get bookmarks with caching and cleanup
       const bookmarks = await this.getCachedBookmarks(userId);
       
       console.log('✅ Bookmarks retrieved:', bookmarks.length);
       res.json({ 
         bookmarks,
         total: bookmarks.length,
-        cached: bookmarkCache.has(`bookmarks_${userId}`)
+        cached: bookmarkCache.has(`bookmarks_${userId}`),
+        message: "Bookmarks retrieved successfully"
       });
       
     } catch (error: any) {
       metrics.errors++;
       console.error('Unexpected error in getBookmarks:', error);
       res.status(500).json({ error: "Failed to fetch bookmarks" });
+    }
+  }
+
+  /**
+   * Admin method to manually trigger bookmark cleanup for all users
+   */
+  static async cleanupAllBookmarks(req: Request, res: Response): Promise<void> {
+    try {
+      console.log('🧹 BookmarkService.cleanupAllBookmarks called');
+      
+      // Extract and verify user ID
+      const authResult = this.extractUserId(req);
+      if (!authResult.success) {
+        console.error('Authentication failed:', authResult.error);
+        res.status(401).json({ error: authResult.error });
+        return;
+      }
+      
+      const userId = authResult.userId!;
+      
+      // Verify user is admin
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { role: true }
+      });
+      
+      if (!user || user.role !== 'admin') {
+        res.status(403).json({ error: "Admin access required" });
+        return;
+      }
+      
+      // Get all users with bookmarks
+      const usersWithBookmarks = await prisma.user.findMany({
+        where: {
+          bookmarks: {
+            some: {}
+          }
+        },
+        select: {
+          id: true,
+          email: true,
+          _count: {
+            select: {
+              bookmarks: true
+            }
+          }
+        }
+      });
+      
+      let totalRemoved = 0;
+      const results: Array<{ userId: string; email: string; removed: number; total: number }> = [];
+      
+      // Process each user's bookmarks
+      for (const userData of usersWithBookmarks) {
+        try {
+          const bookmarks = await prisma.bookmark.findMany({
+            where: { userId: userData.id },
+            select: { id: true, itemId: true, itemType: true }
+          });
+          
+          const { removedCount } = await this.cleanupInvalidBookmarks(userData.id, bookmarks);
+          
+          results.push({
+            userId: userData.id,
+            email: userData.email,
+            removed: removedCount,
+            total: userData._count.bookmarks
+          });
+          
+          totalRemoved += removedCount;
+          
+          // Clear cache for this user
+          this.clearUserCache(userData.id);
+          
+        } catch (error) {
+          console.error(`Failed to cleanup bookmarks for user ${userData.email}:`, error);
+          results.push({
+            userId: userData.id,
+            email: userData.email,
+            removed: 0,
+            total: userData._count.bookmarks
+          });
+        }
+      }
+      
+      console.log(`✅ Cleanup completed: ${totalRemoved} total bookmarks removed`);
+      res.json({
+        message: "Bookmark cleanup completed",
+        totalRemoved,
+        results,
+        processedUsers: usersWithBookmarks.length
+      });
+      
+    } catch (error: any) {
+      console.error('Unexpected error in cleanupAllBookmarks:', error);
+      res.status(500).json({ error: "Failed to cleanup bookmarks" });
     }
   }
 
