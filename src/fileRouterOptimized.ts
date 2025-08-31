@@ -1,18 +1,19 @@
 import { Router, Request, Response } from "express";
 import { 
-    listChildrenWithIconsOptimized, 
-    listChildrenFast, 
-    getSignedDownloadUrl, 
-    getSignedUploadUrl, 
-    createFolder, 
-    deleteFolderRecursively, 
-    getIconUploadUrl, 
-    getCustomIconUrlOptimized, 
+  listChildrenWithIconsOptimized, 
+  listChildrenFast, 
+  getSignedDownloadUrl, 
+  getSignedUploadUrl, 
+  createFolder, 
+  deleteFolderRecursively, 
+  getIconUploadUrl, 
+  getCustomIconUrlOptimized, 
   deleteFile,
   renameFolderExact,
   renameFileExact,
   renameIconsForItem,
-  searchInBucket
+  searchInBucket,
+  invalidateIconCacheFor
 } from "./awsOptimized";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
@@ -449,6 +450,30 @@ router.get('/icons/:encodedPath', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Error fetching icon URL:', err);
     res.status(500).json({ error: 'Failed to fetch icon' });
+  }
+});
+
+// Refresh icon cache and attempt retrieval (used after uploading new icon to bypass cached null)
+router.post('/icons/refresh', async (req: Request, res: Response) => {
+  try {
+    const { itemPath } = req.body || {};
+    if (!itemPath || typeof itemPath !== 'string') { res.status(400).json({ error: 'itemPath is required' }); return; }
+    invalidateIconCacheFor([itemPath]);
+    const attempts: Array<{ attempt: number; found: boolean }> = [];
+    let iconUrl: string | null = null;
+    for (let i = 1; i <= 4; i++) { // up to 4 attempts over ~1.5s
+      iconUrl = await getCustomIconUrlOptimized(itemPath);
+      attempts.push({ attempt: i, found: !!iconUrl });
+      if (iconUrl) break;
+      await new Promise(r => setTimeout(r, 400));
+      // invalidate again so next attempt performs fresh HEADs
+      if (!iconUrl) invalidateIconCacheFor([itemPath]);
+    }
+    if (!iconUrl) { res.status(404).json({ iconUrl: undefined, attempts }); return; }
+    res.json({ iconUrl, attempts });
+  } catch (err) {
+    console.error('Error refreshing icon:', err);
+    res.status(500).json({ error: 'Failed to refresh icon' });
   }
 });
 
