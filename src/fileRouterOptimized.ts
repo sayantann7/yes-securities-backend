@@ -430,8 +430,8 @@ router.post('/icons/upload', async (req: Request, res: Response) => {
   try {
     const { itemPath, iconType = 'png' } = req.body || {};
     if (!itemPath || typeof itemPath !== 'string') { res.status(400).json({ error: 'itemPath is required' }); return; }
-    const uploadUrl = await getIconUploadUrl(itemPath, iconType);
-    res.json({ uploadUrl });
+    const result = await getIconUploadUrl(itemPath, iconType);
+    res.json(result);
   } catch (err) {
     console.error('Error generating icon upload URL:', err);
     res.status(500).json({ error: 'Failed to get upload URL' });

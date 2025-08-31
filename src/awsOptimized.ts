@@ -166,6 +166,19 @@ export async function searchInBucket(params: SearchParams): Promise<SearchResult
 }
 
 /**
+ * Normalize/sanitize icon type (supports extension or MIME) and build S3 key
+ */
+function sanitizeIconType(raw?: string): string {
+    let v = (raw || '').toLowerCase().trim();
+    if (!v) return 'png';
+    if (v.includes('/')) v = v.split('/').pop() || v; // handle image/png
+    if (v === 'jpeg') v = 'jpg';
+    const allowed = new Set(['png','jpg','gif','webp']);
+    if (!allowed.has(v)) return 'png';
+    return v;
+}
+
+/**
  * Build S3 key for a stored icon corresponding to an item path (file or folder)
  */
 export function buildIconKey(itemPath: string, iconType: string = 'png'): string {
@@ -173,17 +186,20 @@ export function buildIconKey(itemPath: string, iconType: string = 'png'): string
         .replace(/^\/+/, '')
         .replace(/\/+$/, '')
         .replace(/[^a-zA-Z0-9._-]/g, '_');
-    const ext = iconType.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    const ext = sanitizeIconType(iconType);
     return `icons/${safe}_icon.${ext}`;
 }
 
 /**
  * Get a signed PUT URL to upload an icon for a given item path
  */
-export async function getIconUploadUrl(itemPath: string, iconType: string = 'png'): Promise<string> {
-    const key = buildIconKey(itemPath, iconType);
-    const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: `image/${iconType === 'jpg' ? 'jpeg' : iconType}` });
-    return await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+export async function getIconUploadUrl(itemPath: string, iconType: string = 'png'): Promise<{ uploadUrl: string; key: string; ext: string; contentType: string }> {
+    const ext = sanitizeIconType(iconType);
+    const key = buildIconKey(itemPath, ext);
+    const contentType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType });
+    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    return { uploadUrl, key, ext, contentType };
 }
 
 /**

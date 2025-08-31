@@ -554,44 +554,58 @@ export class BookmarkService {
         return;
       }
       
-      const sanitizedItemId = decodeURIComponent(itemId.trim());
-      console.log('Deleting bookmark for:', { userId, itemId: sanitizedItemId });
-      
+      let decoded: string;
       try {
-        // Delete bookmark with transaction
+        decoded = decodeURIComponent(itemId.trim());
+      } catch {
+        decoded = itemId.trim();
+      }
+
+      const base = decoded;
+      const noLead = base.replace(/^\/+/, '');
+      const withLead = '/' + noLead;
+      const ensureSlash = (v: string) => v.endsWith('/') ? v : v + '/';
+      const dropSlash = (v: string) => v.replace(/\/+$/, '');
+      const candidateBases = [base, noLead, withLead];
+      const variantsSet = new Set<string>();
+      for (const b of candidateBases) {
+        variantsSet.add(b);
+        variantsSet.add(ensureSlash(b));
+        variantsSet.add(dropSlash(b));
+      }
+      const variants = Array.from(variantsSet).filter(v => v.length > 0);
+      console.log('Attempting bookmark deletion with variants:', { userId, original: itemId, variants });
+
+      try {
         const deleteResult = await prisma.$transaction(async (tx) => {
           return tx.bookmark.deleteMany({
             where: {
               userId,
-              itemId: sanitizedItemId
+              itemId: { in: variants }
             }
           });
         });
-        
-        // Clear cache to ensure fresh data
+
         this.clearUserCache(userId);
-        
+
         if (deleteResult.count === 0) {
-          console.log('❌ No bookmark found to delete');
-          res.status(404).json({ error: "Bookmark not found" });
+          console.log('❌ No bookmark found for any variant');
+          res.status(404).json({ error: 'Bookmark not found' });
           return;
         }
-        
-        console.log('✅ Bookmark deleted successfully');
-        res.json({ 
-          message: "Bookmark removed successfully",
+
+        console.log('✅ Bookmark deleted (variants count removed):', deleteResult.count);
+        res.json({
+          message: 'Bookmark removed successfully',
           deletedCount: deleteResult.count,
-          itemId: sanitizedItemId
+          variantsTried: variants
         });
-        
       } catch (dbError: any) {
-        console.error('Database error deleting bookmark:', dbError);
-        
+        console.error('Database error deleting bookmark (variants):', dbError);
         if (dbError.code === 'P2025') {
-          // Record not found
-          res.status(404).json({ error: "Bookmark not found" });
+          res.status(404).json({ error: 'Bookmark not found' });
         } else {
-          res.status(500).json({ error: "Failed to remove bookmark" });
+          res.status(500).json({ error: 'Failed to remove bookmark' });
         }
       }
       
