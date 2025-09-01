@@ -116,8 +116,23 @@ app.use(cors({
 // Security headers via helmet plus custom strict policies
 app.use(helmet({
   referrerPolicy: { policy: 'no-referrer' },
-  contentSecurityPolicy: false // can be customized later
+  // We'll manage a custom CSP manually below (helmet disabled for CSP)
+  contentSecurityPolicy: false
 }));
+// Custom CSP (restrictive but allows required resources)
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com data:",
+  "img-src 'self' data: blob: https:",
+  "connect-src 'self' https://ysl-sales-repo.sayantan.space https://ysl-admin.sayantan.space https://salesrepo.ysil.in/",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "upgrade-insecure-requests"
+].join('; ');
 app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options','DENY');
   res.setHeader('X-Content-Type-Options','nosniff');
@@ -126,6 +141,11 @@ app.use((_req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy','same-origin');
   res.setHeader('Cross-Origin-Resource-Policy','same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy','require-corp');
+  res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma','no-cache');
+  res.setHeader('Expires','0');
+  res.setHeader('Clear-Site-Data','"cache", "cookies", "storage", "executionContexts"');
+  res.setHeader('Content-Security-Policy', CSP);
   next();
 });
 
