@@ -353,6 +353,27 @@ router.delete('/files/delete', async (req: Request, res: Response) => {
     // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
 
+    // Fire-and-forget notifications to non-admin users about deletion
+    (async () => {
+      try {
+        const base = (decoded.split('/') .pop() || decoded).replace(/\/+$/, '');
+        const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
+        if (users.length) {
+          await prisma.notification.createMany({
+            data: users.map(u => ({
+              type: 'delete',
+              title: 'File Deleted',
+              message: `File "${base}" was deleted`,
+              userId: u.id,
+              documentId: primary
+            }))
+          });
+        }
+      } catch (e) {
+        console.error('Failed to create file deletion notifications:', e);
+      }
+    })();
+
     res.json({ 
       message: 'File delete attempted', 
       attempts: Array.from(attempts),
@@ -454,6 +475,30 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
     
     // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
+
+    // Fire-and-forget notifications to non-admin users about folder deletion
+    (async () => {
+      try {
+        if (folderKey) {
+          const trimmed = folderKey.replace(/\/+$/, '');
+          const base = trimmed.split('/').filter(Boolean).pop() || trimmed;
+          const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
+          if (users.length) {
+            await prisma.notification.createMany({
+              data: users.map(u => ({
+                type: 'delete',
+                title: 'Folder Deleted',
+                message: `Folder "${base}" was deleted`,
+                userId: u.id,
+                documentId: folderKey
+              }))
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Failed to create folder deletion notifications:', e);
+      }
+    })();
 
     res.json({ 
       message: 'Folder deleted', 
