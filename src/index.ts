@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 require("dotenv").config();
 import fileRouter from "./fileRouterOptimized";
+import notificationsRouter from "./notificationsRouter";
 import userRouter from "./userRouter";
 import adminRouter from "./adminRouter";
 import bookmarkRouter from "./bookmarkRouterOptimized";
@@ -161,7 +162,8 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.use("/api", fileRouter);3000
+app.use("/api", fileRouter);
+app.use("/notifications", notificationsRouter);
 app.use("/user", userRouter);
 app.use("/admin", adminRouter);
 app.use("/bookmark", bookmarkRouter);

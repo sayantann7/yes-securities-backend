@@ -260,6 +260,26 @@ router.post(
       if (!keyRaw || typeof keyRaw !== 'string') { res.status(400).json({ error: 'key is required' }); return; }
       const key = toS3Key(decodeURIComponent(keyRaw));
   const url = await getSignedUploadUrl(key, typeof contentType === 'string' ? contentType : undefined);
+      // Fire-and-forget notifications for non-admin users about new upload (we don't await S3 completion)
+      (async () => {
+        try {
+          const filename = key.split('/').pop() || key;
+          const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
+          if (users.length) {
+            await prisma.notification.createMany({
+              data: users.map(u => ({
+                type: 'upload',
+                title: 'New Upload',
+                message: `File "${filename}" uploaded`,
+                userId: u.id,
+                documentId: key
+              }))
+            });
+          }
+        } catch (e) {
+          console.error('Failed to create upload notifications:', e);
+        }
+      })();
       res.json({ url });
     } catch (err) {
       console.error(err);
@@ -385,6 +405,26 @@ router.post('/folders/create', async (req: Request, res: Response) => {
 
     await createFolder(s3Prefix, safeName);
     bookmarkCache.clear();
+
+    // Create notifications for all non-admin users (fire & forget)
+    (async () => {
+      try {
+        const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
+        if (users.length > 0) {
+          await prisma.notification.createMany({
+            data: users.map(u => ({
+              type: 'folder',
+              title: 'New Folder',
+              message: `Folder "${safeName}" created`,
+              userId: u.id,
+              documentId: folderKey
+            }))
+          });
+        }
+      } catch (e) {
+        console.error('Failed to create folder notifications:', e);
+      }
+    })();
 
     res.status(201).json({ message: 'Folder created', key: folderKey });
   } catch (err) {
