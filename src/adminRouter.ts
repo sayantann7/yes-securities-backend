@@ -3,6 +3,9 @@ import multer from 'multer';
 import xlsx from 'xlsx';
 import { prisma } from "./prisma";
 import { deleteUserByEmail } from './services';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET;
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -167,3 +170,186 @@ router.post('/users/import', upload.single('file'), async (req, res) => {
 );
 
 export default router;
+
+// -----------------------------
+// Admin metrics & management APIs
+// -----------------------------
+
+function extractUserId(req: any): string | null {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ') || !JWT_SECRET) return null;
+    const token = auth.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    return decoded.userId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureAdmin(req: any, res: any): Promise<{ id: string } | null> {
+  const userId = extractUserId(req);
+  if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return null; }
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, role: true } });
+  if (!user || user.role !== 'admin') { res.status(403).json({ error: 'Forbidden' }); return null; }
+  return user;
+}
+
+// GET /admin/users-metrics
+router.get('/users-metrics', async (req, res): Promise<void> => {
+  try {
+    const admin = await ensureAdmin(req, res); if (!admin) return;
+    const limit = Math.min(Number(req.query.limit) || 20, 200);
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const sort = typeof req.query.sort === 'string' ? req.query.sort : 'fullname';
+    const order: 'asc' | 'desc' = req.query.order === 'desc' ? 'desc' : 'asc';
+    const activity = req.query.activity === 'active' || req.query.activity === 'inactive' ? req.query.activity : undefined;
+    const includeOverall = req.query.includeOverall === '1' || req.query.includeOverall === 'true';
+    // Basic cursor NOT implemented (we always return single page). Accept param but ignore.
+
+    const where: any = { role: { not: 'admin' } };
+    if (q) {
+      where.OR = [
+        { fullname: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } }
+      ];
+    }
+    const now = new Date();
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    if (activity === 'active') {
+      where.lastSignIn = { gte: sevenDaysAgo };
+    } else if (activity === 'inactive') {
+      // Either never signed in or older than 7 days
+      where.OR = (where.OR || []).concat([
+        { lastSignIn: { lt: sevenDaysAgo } },
+        { lastSignIn: null }
+      ]);
+    }
+
+    const orderBy: any = (() => {
+      switch (sort) {
+        case 'timeSpent': return { timeSpent: order };
+        case 'documentsViewed': return { documentsViewed: order };
+        case 'lastSignIn': return { lastSignIn: order };
+        case 'createdAt': return { createdAt: order };
+        case 'fullname':
+        default: return { fullname: order };
+      }
+    })();
+
+    const usersRaw = await prisma.user.findMany({
+      where,
+      orderBy,
+      take: limit,
+      select: {
+        id: true, fullname: true, email: true, role: true, createdAt: true,
+        lastSignIn: true, numberOfSignIns: true, documentsViewed: true, timeSpent: true, recentDocs: true
+      }
+    });
+
+    const users = usersRaw.map(u => {
+      const last = u.lastSignIn ? new Date(u.lastSignIn) : null;
+      const daysInactive = last ? Math.floor((now.getTime() - last.getTime()) / (1000*60*60*24)) : 9999;
+      return {
+        id: u.id,
+        fullname: u.fullname,
+        email: u.email,
+        role: u.role,
+        createdAt: u.createdAt,
+        lastSignIn: u.lastSignIn,
+        numberOfSignIns: u.numberOfSignIns,
+        documentsViewed: u.documentsViewed,
+        timeSpent: u.timeSpent,
+        recentDocs: u.recentDocs || [],
+        daysInactive
+      };
+    });
+
+    let overallMetrics: any = null;
+    if (includeOverall) {
+      const all = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id:true, fullname:true, timeSpent:true, documentsViewed:true, numberOfSignIns:true, lastSignIn:true, createdAt:true } });
+      const totalUsers = all.length;
+      const activeUsers = all.filter(u => u.lastSignIn && u.lastSignIn >= sevenDaysAgo).length;
+      const inactiveUsers = totalUsers - activeUsers;
+      const totalTime = all.reduce((s,u)=>s+u.timeSpent,0);
+      const totalDocs = all.reduce((s,u)=>s+u.documentsViewed,0);
+      const totalSignIns = all.reduce((s,u)=>s+u.numberOfSignIns,0);
+      const mostActive = all.reduce((a,b)=> b.timeSpent > a.timeSpent ? b : a, all[0] || { fullname:'', timeSpent:0 });
+      const newUsersThisWeek = all.filter(u => u.createdAt >= sevenDaysAgo).length;
+      overallMetrics = {
+        totalUsers,
+        activeUsers,
+        inactiveUsers,
+        averageTimeSpent: totalUsers ? Math.round(totalTime/totalUsers) : 0,
+        totalDocumentViews: totalDocs,
+        averageSignIns: totalUsers ? +(totalSignIns/totalUsers).toFixed(2) : 0,
+        newUsersThisWeek,
+        mostActiveUser: mostActive ? { name: mostActive.fullname, timeSpent: mostActive.timeSpent } : { name: '', timeSpent: 0 }
+      };
+    }
+
+  res.json({
+      users,
+      pageInfo: { nextCursor: null, hasNextPage: false, count: users.length },
+      overallMetrics
+    });
+  } catch (e) {
+    console.error('users-metrics error', e);
+    res.status(500).json({ error: 'Failed to fetch users metrics' });
+  }
+});
+
+// GET /admin/inactive-users?days=7
+router.get('/inactive-users', async (req, res): Promise<void> => {
+  try {
+    const admin = await ensureAdmin(req, res); if (!admin) return;
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 7));
+    const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const inactive = await prisma.user.findMany({
+      where: {
+        role: { not: 'admin' },
+        OR: [
+          { lastSignIn: null },
+          { lastSignIn: { lt: threshold } }
+        ]
+      },
+      select: { id:true, fullname:true, email:true, lastSignIn:true }
+    });
+    const inactiveUsers = inactive.map(u => ({
+      id: u.id,
+      name: u.fullname,
+      email: u.email,
+      lastSignIn: u.lastSignIn,
+      daysInactive: u.lastSignIn ? Math.floor((Date.now() - new Date(u.lastSignIn).getTime())/(1000*60*60*24)) : days
+    }));
+  res.json({ inactiveUsers });
+  } catch (e) {
+    console.error('inactive-users error', e);
+    res.status(500).json({ error: 'Failed to fetch inactive users' });
+  }
+});
+
+// POST /admin/ping-users { userIds:[], message }
+router.post('/ping-users', async (req, res): Promise<void> => {
+  try {
+    const admin = await ensureAdmin(req, res); if (!admin) return;
+    const { userIds, message } = req.body || {};
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof message !== 'string') {
+      res.status(400).json({ error: 'userIds[] and message are required' });
+      return;
+    }
+    // Create notifications for targeted users
+    await prisma.notification.createMany({
+      data: userIds.map((id: string) => ({
+        type: 'ping',
+        title: 'Admin Message',
+        message: message.slice(0, 200),
+        userId: id
+      }))
+    });
+  res.json({ message: 'Ping notifications sent', count: userIds.length });
+  } catch (e) {
+    console.error('ping-users error', e);
+    res.status(500).json({ error: 'Failed to send pings' });
+  }
+});
