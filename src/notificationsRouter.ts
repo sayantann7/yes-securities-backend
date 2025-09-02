@@ -17,13 +17,46 @@ function extractUserId(req: any): string | null {
   }
 }
 
-// List notifications (optionally unread only)
+// Helper: compute cutoff (24h ago)
+function retentionCutoff(): Date {
+  return new Date(Date.now() - 24 * 60 * 60 * 1000);
+}
+
+// One-shot async cleanup (ignore errors)
+export async function purgeOldNotifications() {
+  try {
+    const cutoff = retentionCutoff();
+    const result = await prisma.notification.deleteMany({ where: { createdAt: { lt: cutoff } } });
+    if (result.count) {
+      console.log(`🧹 Purged ${result.count} old notifications (older than 24h)`);
+    }
+  } catch (e) {
+    console.error('Notification purge failed:', e);
+  }
+}
+
+// Schedule daily purge at roughly midnight server time
+let purgeScheduled = false;
+function scheduleDailyPurge() {
+  if (purgeScheduled) return;
+  purgeScheduled = true;
+  const run = async () => {
+    await purgeOldNotifications();
+    // Schedule next run in 24h
+    setTimeout(run, 24 * 60 * 60 * 1000);
+  };
+  // Initial delay: run once on startup after brief delay
+  setTimeout(run, 10_000);
+}
+scheduleDailyPurge();
+
+// List notifications (optionally unread only) (24h retention enforced)
 router.get('/', async (req, res): Promise<void> => {
   try {
     const userId = extractUserId(req);
   if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     const unreadOnly = req.query.unread === 'true';
-    const where: any = { userId };
+    const where: any = { userId, createdAt: { gte: retentionCutoff() } };
     if (unreadOnly) where.read = false;
     const notifications = await prisma.notification.findMany({
       where,
