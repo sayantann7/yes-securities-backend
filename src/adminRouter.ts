@@ -219,9 +219,11 @@ router.get('/users-metrics', async (req, res): Promise<void> => {
     const now = new Date();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     if (activity === 'active') {
-      andClauses.push({ lastSignIn: { gte: sevenDaysAgo } });
+      // Active = signed in at least once and last sign-in within 7 days
+      andClauses.push({ AND: [ { lastSignIn: { gte: sevenDaysAgo } }, { numberOfSignIns: { gt: 0 } } ] });
     } else if (activity === 'inactive') {
-      andClauses.push({ OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null } ] });
+      // Inactive = never signed in OR last sign-in older than 7 days OR missing
+      andClauses.push({ OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null }, { numberOfSignIns: { lte: 0 } } ] });
     }
     const where: any = andClauses.length === 1 ? andClauses[0] : { AND: andClauses };
 
