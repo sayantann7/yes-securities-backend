@@ -199,32 +199,31 @@ async function ensureAdmin(req: any, res: any): Promise<{ id: string } | null> {
 router.get('/users-metrics', async (req, res): Promise<void> => {
   try {
     const admin = await ensureAdmin(req, res); if (!admin) return;
-    const limit = Math.min(Number(req.query.limit) || 20, 200);
+  const limit = Math.min(Number(req.query.limit) || 20, 500);
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     const sort = typeof req.query.sort === 'string' ? req.query.sort : 'fullname';
     const order: 'asc' | 'desc' = req.query.order === 'desc' ? 'desc' : 'asc';
     const activity = req.query.activity === 'active' || req.query.activity === 'inactive' ? req.query.activity : undefined;
     const includeOverall = req.query.includeOverall === '1' || req.query.includeOverall === 'true';
+  const cursorId = typeof req.query.cursor === 'string' && req.query.cursor.trim() !== '' ? req.query.cursor.trim() : null;
     // Basic cursor NOT implemented (we always return single page). Accept param but ignore.
 
-    const where: any = { role: { not: 'admin' } };
+    // Build base filters using AND groups to avoid broadening inactive searches
+    const andClauses: any[] = [{ role: { not: 'admin' } }];
     if (q) {
-      where.OR = [
+      andClauses.push({ OR: [
         { fullname: { contains: q, mode: 'insensitive' } },
         { email: { contains: q, mode: 'insensitive' } }
-      ];
+      ]});
     }
     const now = new Date();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     if (activity === 'active') {
-      where.lastSignIn = { gte: sevenDaysAgo };
+      andClauses.push({ lastSignIn: { gte: sevenDaysAgo } });
     } else if (activity === 'inactive') {
-      // Either never signed in or older than 7 days
-      where.OR = (where.OR || []).concat([
-        { lastSignIn: { lt: sevenDaysAgo } },
-        { lastSignIn: null }
-      ]);
+      andClauses.push({ OR: [ { lastSignIn: { lt: sevenDaysAgo } }, { lastSignIn: null } ] });
     }
+    const where: any = andClauses.length === 1 ? andClauses[0] : { AND: andClauses };
 
     const orderBy: any = (() => {
       switch (sort) {
@@ -237,9 +236,11 @@ router.get('/users-metrics', async (req, res): Promise<void> => {
       }
     })();
 
+    const orderByWithTiebreak = sort === 'id' ? orderBy : [orderBy, { id: 'asc' as const }];
     const usersRaw = await prisma.user.findMany({
       where,
-      orderBy,
+      orderBy: orderByWithTiebreak as any,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
       take: limit,
       select: {
         id: true, fullname: true, email: true, role: true, createdAt: true,
@@ -288,9 +289,10 @@ router.get('/users-metrics', async (req, res): Promise<void> => {
       };
     }
 
-  res.json({
+    const nextCursor = users.length === limit ? users[users.length - 1].id : null;
+    res.json({
       users,
-      pageInfo: { nextCursor: null, hasNextPage: false, count: users.length },
+      pageInfo: { nextCursor, hasNextPage: !!nextCursor, count: users.length },
       overallMetrics
     });
   } catch (e) {
