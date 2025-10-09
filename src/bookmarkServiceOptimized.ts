@@ -5,6 +5,7 @@ import { HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/clie
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { Agent as HttpAgent } from 'http';
 import { Agent as HttpsAgent } from 'https';
+import { cacheUserBookmarks, invalidateUserCaches, advancedCache } from './advancedCacheService';
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
