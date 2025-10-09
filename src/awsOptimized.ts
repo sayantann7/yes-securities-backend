@@ -16,8 +16,8 @@ const S3_MAX_ATTEMPTS = parseInt(process.env.S3_MAX_ATTEMPTS || '5', 10);
 const httpHandler = new NodeHttpHandler({
     connectionTimeout: S3_CONN_TIMEOUT,
     requestTimeout: S3_REQ_TIMEOUT,
-    httpAgent: new HttpAgent({ keepAlive: true, maxSockets: 64 }),
-    httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: 64 }),
+    httpAgent: new HttpAgent({ keepAlive: true, maxSockets: 128 }), // Increased from 64 for 1000+ users
+    httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: 128 }), // Increased from 64 for 1000+ users
 });
 
 const s3Client = new S3Client({ 
@@ -33,6 +33,44 @@ const iconCache = new Map<string, string | null>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const cacheTimestamps = new Map<string, number>();
 const ICON_CACHE_MAX_ENTRIES = 5000;
+
+// Cache for folder listings (optimized for high user concurrency)
+interface FolderListingCache {
+    folders: any[];
+    files: any[];
+    timestamp: number;
+}
+const folderListingCache = new Map<string, FolderListingCache>();
+const FOLDER_LISTING_CACHE_TTL = 2 * 60 * 1000; // 2 minutes - balance freshness vs performance
+const FOLDER_LISTING_CACHE_MAX_ENTRIES = 1000;
+
+function enforceFolderListingCacheLimit() {
+    if (folderListingCache.size <= FOLDER_LISTING_CACHE_MAX_ENTRIES) return;
+    const entries: Array<{ key: string; ts: number }> = [];
+    for (const [key, data] of folderListingCache.entries()) {
+        entries.push({ key, ts: data.timestamp });
+    }
+    entries.sort((a, b) => a.ts - b.ts);
+    const toEvict = folderListingCache.size - FOLDER_LISTING_CACHE_MAX_ENTRIES;
+    for (let i = 0; i < toEvict; i++) {
+        folderListingCache.delete(entries[i].key);
+    }
+}
+
+export function invalidateFolderListingCache(prefix?: string) {
+    if (prefix) {
+        // Invalidate specific prefix and its children
+        const normalizedPrefix = canonicalKey(prefix);
+        for (const key of folderListingCache.keys()) {
+            if (key.startsWith(normalizedPrefix)) {
+                folderListingCache.delete(key);
+            }
+        }
+    } else {
+        // Clear entire cache
+        folderListingCache.clear();
+    }
+}
 
 function enforceIconCacheLimit() {
     if (iconCache.size <= ICON_CACHE_MAX_ENTRIES) return;
@@ -323,12 +361,29 @@ async function listOnce(prefix: string, maxItems: number) {
 }
 
 /**
- * Optimized list children with concurrent icon loading and limits; merges both '' and '/' roots.
+ * Optimized list children with concurrent icon loading, caching, and limits; merges both '' and '/' roots.
  */
 export async function listChildrenWithIconsOptimized(prefix: string = '', maxItems: number = 1000) {
+    const cacheKey = canonicalKey(prefix) || 'root';
+    const now = Date.now();
+    
+    // Check cache first
+    const cached = folderListingCache.get(cacheKey);
+    if (cached && (now - cached.timestamp) < FOLDER_LISTING_CACHE_TTL) {
+        console.log(`📦 Cache HIT for folder listing: ${cacheKey}`);
+        return { 
+            folders: cached.folders, 
+            files: cached.files, 
+            isTruncated: false, 
+            continuationToken: undefined 
+        };
+    }
+    
+    console.log(`🔍 Cache MISS for folder listing: ${cacheKey}, fetching from S3...`);
+    
     const variants = makePrefixes(prefix);
     const foldersMap = new Map<string, { key: string }>();
-    const filesMap = new Map<string, { key: string }>();
+    const filesMap = new Map<string, { key: string; size?: number; lastModified?: string }>();
 
     for (const v of variants) {
         const { folders, files } = await listOnce(v, maxItems);
@@ -348,7 +403,7 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
     const folderKeys = Array.from(foldersMap.values()).map(f => f.key);
     const iconResults = await (async () => {
         const out = new Map<string, string | null>();
-        const concurrency = 5;
+        const concurrency = 10; // Increased from 5 for better parallelism with 1000 users
         for (let i = 0; i < folderKeys.length; i += concurrency) {
             const batch = folderKeys.slice(i, i + concurrency);
             const promises = batch.map(async (k) => ({ k, url: await getCustomIconUrlOptimized(k) }));
@@ -362,6 +417,16 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
 
     const folders = Array.from(foldersMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
     const files = Array.from(filesMap.values()).map(f => ({ key: f.key })); // no icon lookup for files
+
+    // Cache the result
+    folderListingCache.set(cacheKey, {
+        folders,
+        files,
+        timestamp: now
+    });
+    enforceFolderListingCacheLimit();
+    
+    console.log(`✅ Cached folder listing: ${cacheKey} (${folders.length} folders, ${files.length} files)`);
 
     return { folders, files, isTruncated: false, continuationToken: undefined };
 }

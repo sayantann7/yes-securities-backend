@@ -13,7 +13,8 @@ import {
   renameFileExact,
   renameIconsForItem,
   searchInBucket,
-  invalidateIconCacheFor
+  invalidateIconCacheFor,
+  invalidateFolderListingCache
 } from "./awsOptimized";
 import { prisma } from "./prisma";
 import jwt from "jsonwebtoken";
@@ -126,13 +127,14 @@ async function removeBookmarksForItem(itemPath: string): Promise<number> {
   }
 }
 
-// List with optional icons
+// List with optional icons and signed URLs (optimized for high concurrency)
 router.post(
   "/folders",
   async (req: Request, res: Response) => {
     try {
         const prefixRaw = req.body.prefix as string | undefined;
         const loadIcons = req.body.loadIcons !== false; // Default to true
+        const includeUrls = req.body.includeUrls !== false; // Default to true - include signed URLs
         const maxItems = parseInt(req.body.maxItems) || 500; // Limit items per request
 
         // Auth (optional) to fetch bookmarks
@@ -166,6 +168,27 @@ router.post(
 
         let foldersOut = filteredFolders;
         let filesOut = filteredFiles;
+
+        // Generate signed URLs for all files concurrently (major performance boost)
+        if (includeUrls && filesOut.length > 0) {
+          const urlPromises = filesOut.map(async (file) => {
+            try {
+              const url = await getSignedDownloadUrl(file.key);
+              return { key: file.key, url };
+            } catch (err) {
+              console.error(`Failed to generate URL for ${file.key}:`, err);
+              return { key: file.key, url: null };
+            }
+          });
+          
+          const urlResults = await Promise.all(urlPromises);
+          const urlMap = new Map(urlResults.map(r => [r.key, r.url]));
+          
+          filesOut = filesOut.map(file => ({
+            ...file,
+            url: urlMap.get(file.key) || undefined
+          }));
+        }
 
         // Bookmarks (optional)
         if (userId) {
@@ -251,6 +274,62 @@ router.post(
   }
 );
 
+// Batch fetch signed URLs for multiple files (optimized for concurrent users)
+router.post(
+  "/files/fetch-batch",
+  async (req: Request, res: Response) => {
+    try {
+      const { keys: keysRaw } = req.body || {};
+      if (!Array.isArray(keysRaw) || keysRaw.length === 0) {
+        res.status(400).json({ error: 'keys array is required' });
+        return;
+      }
+      
+      // Limit batch size to prevent abuse
+      const MAX_BATCH_SIZE = 100;
+      if (keysRaw.length > MAX_BATCH_SIZE) {
+        res.status(400).json({ error: `Maximum batch size is ${MAX_BATCH_SIZE}` });
+        return;
+      }
+      
+      // Process all keys concurrently with error handling per key
+      const urlPromises = keysRaw.map(async (keyRaw) => {
+        try {
+          if (typeof keyRaw !== 'string') return { key: keyRaw, url: null, error: 'Invalid key type' };
+          const key = toS3Key(decodeURIComponent(keyRaw));
+          const url = await getSignedDownloadUrl(key);
+          return { key: keyRaw, url, error: null };
+        } catch (err) {
+          console.error(`Error generating URL for key ${keyRaw}:`, err);
+          return { key: keyRaw, url: null, error: 'Failed to generate URL' };
+        }
+      });
+      
+      const results = await Promise.all(urlPromises);
+      
+      // Return both successful and failed results
+      const urls = results.reduce((acc, result) => {
+        if (result.url) {
+          acc[result.key] = result.url;
+        }
+        return acc;
+      }, {} as Record<string, string>);
+      
+      const errors = results.filter(r => r.error).map(r => ({ key: r.key, error: r.error }));
+      
+      res.json({ 
+        urls,
+        errors: errors.length > 0 ? errors : undefined,
+        total: keysRaw.length,
+        successful: Object.keys(urls).length
+      });
+    } catch (err) {
+      console.error('Batch fetch error:', err);
+      res.status(500).json({ error: "Failed to generate signed URLs" });
+    }
+  }
+);
+
 // Get signed URL for file upload
 router.post(
   "/files/upload",
@@ -260,6 +339,11 @@ router.post(
       if (!keyRaw || typeof keyRaw !== 'string') { res.status(400).json({ error: 'key is required' }); return; }
       const key = toS3Key(decodeURIComponent(keyRaw));
   const url = await getSignedUploadUrl(key, typeof contentType === 'string' ? contentType : undefined);
+      
+      // Invalidate folder listing cache for the parent folder
+      const folderPath = key.split('/').slice(0, -1).join('/');
+      invalidateFolderListingCache(folderPath);
+      
       // Fire-and-forget notifications for non-admin users about new upload (we don't await S3 completion)
       (async () => {
         try {
@@ -267,7 +351,7 @@ router.post(
           const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
           if (users.length) {
             await prisma.notification.createMany({
-              data: users.map(u => ({
+              data: users.map((u: any) => ({
                 type: 'upload',
                 title: 'New Upload',
                 message: `File "${filename}" uploaded`,
@@ -352,6 +436,10 @@ router.delete('/files/delete', async (req: Request, res: Response) => {
     
     // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
+    
+    // Invalidate folder listing cache for the parent folder
+    const folderPath = decoded.split('/').slice(0, -1).join('/');
+    invalidateFolderListingCache(folderPath);
 
     // Fire-and-forget notifications to non-admin users about deletion
     (async () => {
@@ -360,7 +448,7 @@ router.delete('/files/delete', async (req: Request, res: Response) => {
         const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
         if (users.length) {
           await prisma.notification.createMany({
-            data: users.map(u => ({
+            data: users.map((u: any) => ({
               type: 'delete',
               title: 'File Deleted',
               message: `File "${base}" was deleted`,
@@ -426,6 +514,9 @@ router.post('/folders/create', async (req: Request, res: Response) => {
 
     await createFolder(s3Prefix, safeName);
     bookmarkCache.clear();
+    
+    // Invalidate folder listing cache for the parent folder
+    invalidateFolderListingCache(prefix);
 
     // Create notifications for all non-admin users (fire & forget)
     (async () => {
@@ -433,7 +524,7 @@ router.post('/folders/create', async (req: Request, res: Response) => {
         const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
         if (users.length > 0) {
           await prisma.notification.createMany({
-            data: users.map(u => ({
+            data: users.map((u: any) => ({
               type: 'folder',
               title: 'New Folder',
               message: `Folder "${safeName}" created`,
@@ -475,6 +566,11 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
     
     // Clear bookmark cache since bookmarks may have been removed
     bookmarkCache.clear();
+    
+    // Invalidate folder listing cache for the parent folder and the deleted folder
+    const parentPath = folderKey.split('/').slice(0, -2).join('/');
+    invalidateFolderListingCache(parentPath);
+    invalidateFolderListingCache(folderKey); // Also invalidate the deleted folder itself
 
     // Fire-and-forget notifications to non-admin users about folder deletion
     (async () => {
@@ -485,7 +581,7 @@ router.delete('/folders/delete', async (req: Request, res: Response) => {
           const users = await prisma.user.findMany({ where: { role: { not: 'admin' } }, select: { id: true } });
           if (users.length) {
             await prisma.notification.createMany({
-              data: users.map(u => ({
+              data: users.map((u: any) => ({
                 type: 'delete',
                 title: 'Folder Deleted',
                 message: `Folder "${base}" was deleted`,
