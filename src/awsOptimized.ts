@@ -361,7 +361,7 @@ async function listOnce(prefix: string, maxItems: number) {
     });
     const response = await s3Client.send(cmd);
     const folders: Array<{key: string}> = [];
-    const files: Array<{key: string}> = [];
+    const files: Array<{key: string; size?: number; lastModified?: string}> = [];
 
     if (response.CommonPrefixes) {
         response.CommonPrefixes.forEach(prefixObj => {
@@ -374,7 +374,11 @@ async function listOnce(prefix: string, maxItems: number) {
         response.Contents.forEach(content => {
             const fileKey = content.Key || "";
             if (!fileKey.endsWith('/')) {
-                files.push({ key: fileKey });
+                files.push({
+                    key: fileKey,
+                    size: typeof content.Size === 'number' ? content.Size : undefined,
+                    lastModified: content.LastModified instanceof Date ? content.LastModified.toISOString() : undefined,
+                });
             }
         });
     }
@@ -406,7 +410,7 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
         for (const f of files) {
             const norm = canonicalKey(f.key);
             if (norm.startsWith('icons/')) continue; // hide icon objects
-            filesMap.set(norm, { key: norm });
+            filesMap.set(norm, { key: norm, size: f.size, lastModified: f.lastModified });
         }
     }
 
@@ -432,7 +436,7 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
         })();
 
         const folders = Array.from(foldersMap.values()).map(f => ({ key: f.key, iconUrl: iconResults.get(f.key) || undefined }));
-        const files = Array.from(filesMap.values()).map(f => ({ key: f.key })); // no icon lookup for files
+        const files = Array.from(filesMap.values()).map(f => ({ key: f.key, size: f.size, lastModified: f.lastModified }));
 
         console.log(`✅ Loaded folder listing: ${cacheKey} (${folders.length} folders, ${files.length} files)`);
 
@@ -446,8 +450,8 @@ export async function listChildrenWithIconsOptimized(prefix: string = '', maxIte
 export async function listChildrenFast(prefix: string = '', maxItems: number = 1000) {
     try {
         const variants = makePrefixes(prefix);
-        const foldersMap = new Map<string, { key: string }>();
-        const filesMap = new Map<string, { key: string }>();
+    const foldersMap = new Map<string, { key: string }>();
+    const filesMap = new Map<string, { key: string; size?: number; lastModified?: string }>();
 
         for (const v of variants) {
             const { folders, files } = await listOnce(v, maxItems);
@@ -459,13 +463,13 @@ export async function listChildrenFast(prefix: string = '', maxItems: number = 1
             for (const f of files) {
                 const norm = canonicalKey(f.key);
                 if (norm.startsWith('icons/')) continue; // hide icon objects
-                filesMap.set(norm, { key: norm });
+                filesMap.set(norm, { key: norm, size: f.size, lastModified: f.lastModified });
             }
         }
 
         return {
             folders: Array.from(foldersMap.values()),
-            files: Array.from(filesMap.values()),
+            files: Array.from(filesMap.values()).map(f => ({ key: f.key, size: f.size, lastModified: f.lastModified })),
             isTruncated: false,
             continuationToken: undefined
         };
