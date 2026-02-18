@@ -13,66 +13,9 @@ import crypto from 'crypto';
 import { prisma } from "./prisma";
 
 // --------------------------------------------------
-// Persistent logging setup (simple daily rotation)
+// Logging setup - file logging disabled
 // --------------------------------------------------
-const LOG_DIR = process.env.LOG_DIR || path.join(process.cwd(), 'logs');
-const LOG_FILE_BASENAME = 'app.log';
-const MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024; // 5MB per file before rolling
-
-function ensureLogDir() {
-  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
-}
-
-function currentLogPath() {
-  return path.join(LOG_DIR, LOG_FILE_BASENAME);
-}
-
-function rotateIfNeeded() {
-  try {
-    const file = currentLogPath();
-    if (fs.existsSync(file)) {
-      const stats = fs.statSync(file);
-      if (stats.size >= MAX_LOG_SIZE_BYTES) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const rotated = path.join(LOG_DIR, `app-${timestamp}.log`);
-        fs.renameSync(file, rotated);
-      }
-    }
-  } catch (e) {
-    // Swallow rotation errors to avoid breaking the app
-  }
-}
-
-function appendLog(line: string) {
-  try {
-    ensureLogDir();
-    rotateIfNeeded();
-    fs.appendFileSync(currentLogPath(), line + '\n');
-  } catch {}
-}
-
-// Wrap console methods to duplicate output
-(['log','info','warn','error'] as const).forEach(level => {
-  const orig = console[level];
-  // @ts-ignore
-  console[level] = (...args: any[]) => {
-    try {
-      const msg = args.map(a => {
-        if (a instanceof Error) return a.stack || a.message;
-        if (typeof a === 'object') {
-          try { return JSON.stringify(a); } catch { return String(a); }
-        }
-        return String(a);
-      }).join(' ');
-      const line = `[${new Date().toISOString()}] ${level.toUpperCase()} ${msg}`;
-      appendLog(line);
-    } catch {}
-    // Always call original
-    orig.apply(console, args);
-  };
-});
-
-console.log('📝 File logging initialized. Logs directory:', LOG_DIR);
+// Console output only, no log files created
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;

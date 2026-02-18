@@ -6,7 +6,7 @@ echo "Stopping Yes Securities Backend Service..."
 # Get the script directory (root directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Backend directory is a subdirectory of root
-BACKEND_DIR="$SCRIPT_DIR/sales_team_repo/yes-securities-backend"
+BACKEND_DIR="$SCRIPT_DIR/sales_team_repo/yes-securities-backend-new"
 
 echo "Looking for backend in: $BACKEND_DIR"
 

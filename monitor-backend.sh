@@ -4,11 +4,10 @@
 # This script monitors the backend process and restarts it if it crashes
 
 BACKEND_DIR="/home/sayantan/yes-securities-backend"
-LOG_FILE="$BACKEND_DIR/backend-monitor.log"
 PID_FILE="$BACKEND_DIR/backend.pid"
 
 log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
 start_backend() {
@@ -27,7 +26,7 @@ start_backend() {
     fi
     
     # Start new process
-    npm run dev > "$BACKEND_DIR/backend-output.log" 2>&1 &
+    npm run dev &
     NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
     log_message "Backend started with PID $NEW_PID"
