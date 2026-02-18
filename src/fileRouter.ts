@@ -247,7 +247,7 @@ router.get('/icons/:itemPath', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Item path is required' });
     }
     
-    const decodedPath = decodeURIComponent(itemPath);
+    const decodedPath = decodeURIComponent(itemPath as string);
     const iconUrl = await getCustomIconUrl(decodedPath);
     
     if (!iconUrl) {

@@ -528,7 +528,7 @@ router.post('/icons/upload', async (req: Request, res: Response) => {
 router.get('/icons/:encodedPath', async (req: Request, res: Response) => {
   try {
     const encoded = req.params.encodedPath;
-    const itemPath = decodeURIComponent(encoded);
+    const itemPath = decodeURIComponent(encoded as string);
     const iconUrl = await getCustomIconUrlOptimized(itemPath);
     if (!iconUrl) { res.status(404).json({ iconUrl: undefined }); return; }
     res.json({ iconUrl });
